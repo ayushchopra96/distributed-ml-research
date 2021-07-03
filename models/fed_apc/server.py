@@ -43,10 +43,10 @@ class Server:
         console_log('[server] started')
         self.start_time = time.time()
         # self.init_global_weights()
-        num_clients = self.init_clients()
+        self.num_clients = self.init_clients()
 
         self.personalized_weights = []
-        for _ in range(len(num_clients)):
+        for _ in range(len(self.num_clients)):
             for i in range(len(self.shapes)):
                 self.personalized_weights.append(
                     self.initializer(self.shapes[i])
@@ -129,86 +129,50 @@ class Server:
 
     def update(self, selected_clients):
         # client_weights = [sc.get_weights() for sc in selected_clients]
-        client_weights = [self.personalized_weights[c.client_id]
-                          for c in selected_clients]
+        selected_client_ids = [c.client_id for c in selected_clients]
+        client_weights = [self.personalized_weights[c]
+                          for c in selected_client_ids]
         client_masks = [w[1] for w in client_weights]
         client_weights = [w[0] for w in client_weights]
         client_sizes = [sc.get_train_size() for sc in selected_clients]
         # prev_kb = self.get_weights()
         # self.fedavg(client_weights, client_sizes, client_masks)
-        self.fed_per_avg(client_weights, client_sizes, client_masks)
+        self.fed_per_avg(client_weights, client_sizes,
+                         selected_client_ids, client_masks)
         # _newkb = self.compute_newkb(
         #     [np.random.random(pkb.shape) for pkb in prev_kb], prev_kb, 1e-1, 1e-5, 100)
         # self.set_weights(_newkb)
         # self.calculate_comm_costs(self.get_weights())
 
-    def compute_newkb(self, newkb, prev_kb, gdlr, l1hyp, _iter):
-        for _l in range(len(prev_kb)):
-            if len(prev_kb[_l].shape) != 1:
-                n_active, n_full = 0, 0
-                gdloss = [0., 0.]
-                for iter in range(_iter):
-                    gdloss[0] = 0.5 * \
-                        np.sum(np.square(newkb[_l]-self.global_weights[_l]))
-                    gdloss[1] = l1hyp * np.sum(np.abs(newkb[_l]-prev_kb[_l]))
-                    newkb[_l] = newkb[_l] - gdlr * (
-                        newkb[_l] - self.global_weights[_l] + l1hyp * np.sign(newkb[_l] - prev_kb[_l]))
-                difference = newkb[_l]-prev_kb[_l]
-                diff_sort = np.sort(np.abs(difference), axis=None)
-                thr_difference = diff_sort[-int(
-                    (1-self.opt.server_sparsity) * len(diff_sort))]
-                selected = np.where(
-                    np.abs(difference) >= thr_difference, newkb[_l], np.zeros(difference.shape))
-                self.global_weights[_l] = selected
-                n_active += np.sum(np.not_equal(selected,
-                                                np.zeros(difference.shape)))
-                n_full += np.prod(difference.shape)
-        return newkb
-
-    def fedavg(self, client_weights, client_sizes, client_masks=[]):
-        new_weights = [np.zeros_like(w) for w in self.get_weights()]
-        if self.opt.sparse_comm:
-            epsi = 1e-15
-            client_masks = tf.ragged.constant(client_masks, dtype=tf.float32)
-            client_sizes = [tf.math.multiply(
-                m, client_sizes[i]) for i, m in enumerate(client_masks)]
-            total_sizes = epsi
-            for _cs in client_sizes:
-                total_sizes += _cs
-            for c_idx, c_weights in enumerate(client_weights):  # by client
-                for lidx, l_weights in enumerate(c_weights):  # by layer
-                    ratio = client_sizes[c_idx][lidx]/total_sizes[lidx]
-                    new_weights[lidx] += tf.math.multiply(
-                        l_weights, ratio).numpy()
-        else:
-            total_size = np.sum(client_sizes)
-            for c in range(len(client_weights)):  # by client
-                _client_weights = client_weights[c]
-                for i in range(len(new_weights)):  # by layer
-                    new_weights[i] += _client_weights[i] * \
-                        float(client_sizes[c]/total_size)
-        self.set_weights(new_weights)
-
-    def fed_per_avg(self, client_weights, client_sizes, client_masks=[]):
-        sim_matrix = self.client_similarity(client_weights)
-        new_personalized_weights = []
+    def fed_per_avg(self, client_weights, client_sizes, selected_ids, client_masks=[]):
+        sim_matrix = self.client_similarity(client_weights, selected_ids)
         for per_c in range(len(self.personalized_weights)):
             new_weights = [np.zeros_like(w) for w in self.get_weights()]
-            for c in range(len(client_weights)):  # by client
+            for c in selected_ids:  # by client
                 _client_weights = client_weights[c]
                 for i in range(len(new_weights)):  # by layer
                     new_weights[i] += sim_matrix[per_c, c] * _client_weights[i]
 
-            new_personalized_weights.append(new_weights)
-        self.personalized_weights = new_personalized_weights
+            self.personalized_weights[] = new_weights
 
-    def client_similarity(self, client_weights):
+    def client_similarity(self, client_weights, selected_ids):
         sim_matrix = np.full((len(client_weights), len(
             client_weights)), SELF_ATTENTION_CLIENT_WEIGHT)
-        for j in range(len(client_weights)):
+        for j in range(len(self.num_clients)):
             for i in range(j):
+                if i in selected_ids:
+                    c1 = client_weights[i]
+                else:
+                    c1 = self.personalized_weights[i]
+                if j in selected_ids:
+                    c2 = client_weights[j]
+                else:
+                    c2 = self.personalized_weights[j]
+
                 sim_matrix[i, j] = self.cos_sim(
-                    client_weights[i], client_weights[j])
+                    c1,
+                    c2
+                )
                 sim_matrix[j, i] = sim_matrix[i, j]
 
         exp_sim = np.exp(sim_matrix)
