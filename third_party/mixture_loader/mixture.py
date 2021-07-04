@@ -1,5 +1,5 @@
 ##########################################
-# Codes from https://github.com/joansj/hat
+# Code froz https://github.com/joansj/hat
 ##########################################
 
 import os,sys
@@ -109,9 +109,9 @@ def get(seed=0, fixed_order=False, pc_valid=0.15, base_dir=None):
                 mean=(0.2190,) # Mean and std including the padding
                 std=(0.3318,)
                 dat={}
-                dat['train']=FashionMNIST(base_dir+'/data/fashion_mnist', train=True, download=True, transform=transforms.Compose([
+                dat['train']=datasets.FashionMNIST(base_dir+'/data/fashion_mnist', train=True, download=True, transform=transforms.Compose([
                     transforms.Pad(padding=2, fill=0), transforms.ToTensor(),transforms.Normalize(mean, std)]))
-                dat['test']=FashionMNIST(base_dir+'/data/fashion_mnist', train=False, download=True, transform=transforms.Compose([
+                dat['test']=datasets.FashionMNIST(base_dir+'/data/fashion_mnist', train=False, download=True, transform=transforms.Compose([
                     transforms.Pad(padding=2, fill=0), transforms.ToTensor(),transforms.Normalize(mean, std)]))
                 data[n]={}
                 data[n]['name']='fashion-mnist'

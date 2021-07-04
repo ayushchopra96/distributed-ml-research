@@ -1,5 +1,5 @@
 ##########################################
-# Codes from https://github.com/joansj/hat
+# Code from https://github.com/joansj/hat
 ##########################################
 
 import os,sys
