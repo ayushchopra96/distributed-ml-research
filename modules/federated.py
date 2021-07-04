@@ -74,13 +74,12 @@ class ServerModule:
             offset = self.parallel_clients[-1][-1]+1
             self.parallel_clients.append(np.arange(residuals)+offset)
 
-        initial_weights = self.global_weights
         if len(self.gpus) > 0:
             for i, gpu_id in enumerate(self.gpu_ids):
                 gpu = self.gpus[gpu_id]
                 with tf.device('/device:GPU:{}'.format(gpu_id)):
                     self.clients[gpu_id] = self.ClientObj(
-                        gpu_id, opt_copied, initial_weights)
+                        gpu_id, opt_copied, self.personalized_weights[gpu_id])
         else:
             num_parallel = 5
             self.clients = {i: self.ClientObj(

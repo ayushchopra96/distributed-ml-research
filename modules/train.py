@@ -276,14 +276,14 @@ class TrainModule:
 
         sim_matrix = self.client_similarity(
             client_weights, selected_ids, personalized_weights)
-        new_weights = [np.zeros_like(w) for w in self.get_weights(0)]
+        new_weights = [np.zeros_like(w) for w in personalized_weights[0]]
         new_weights = [copy.deepcopy(new_weights)
                        for _ in range(self.args.num_clients)]
         for i in range(len(client_weights[0])):  # by layer
             for per_c in selected_ids:  # by total clients
-                for c in selected_ids:  # by selected clients
+                for idx, c in enumerate(selected_ids):  # by selected clients
                     new_weights[per_c][i] += float(sim_matrix[per_c, c]
-                                                   ) * client_weights[c][i]
+                                                   ) * client_weights[idx][i]
 
         return new_weights
 
