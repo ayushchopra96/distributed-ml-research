@@ -4,7 +4,7 @@ cachetools==4.1.0
 certifi==2020.4.5.1
 chardet==3.0.4
 future==0.18.2
-gast==0.2.2
+gast==0.3.3
 google-auth==1.14.1
 google-auth-oauthlib==0.4.1
 google-pasta==0.2.0
@@ -29,12 +29,12 @@ rsa==4.0
 scikit-learn==0.22.2.post1
 scipy==1.4.1
 six==1.14.0
-tensorboard==2.1.1
-tensorflow-estimator==2.1.0
-tensorflow-gpu==2.1.0
+tensorboard==2.2.0
+tensorflow-estimator==2.2.0
+tensorflow-gpu==2.2.0
 termcolor==1.1.0
-torch==1.5.0
-torchvision==0.6.0
+# torch==1.5.0
+# torchvision==0.6.0
 tqdm==4.45.0
 urllib3==1.25.9
 Werkzeug==1.0.1
