@@ -56,8 +56,8 @@ def advantage(
     dataset_ratio
 ):
     # discount_hparam decides how much to weigh previous round's information.
-    # discount_hparam can be in [0, 1]. If equal to 1 -> don't use any old information
-    # If equal to 0 -> weigh old information equally to new information
+    # discount_hparam can be in [0, 1]. If equal to 0 -> don't use any old information
+    # If equal to 1 -> weigh old information equally to new information
 
     # client_losses -> (num_rounds, num_clients)
 
