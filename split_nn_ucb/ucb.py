@@ -10,7 +10,7 @@ class UCB:
         self.num_clients = num_clients
         self.k = k
         self.round_counter = -1
-        self.max_history = 2048 # store data for only last 10000 steps
+        self.max_history = 2048 # store data for only last this number of steps
         self.end_round()
 
     def update_client(self, client_id, losses, was_selected):
