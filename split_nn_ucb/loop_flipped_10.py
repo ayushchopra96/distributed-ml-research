@@ -340,9 +340,9 @@ def experiment_ucb(
                         x, i, False, flops_interrupted
                     )
                     loss2 = criterion(intermediate_output, y)
-                    losses = loss2.clone().detach().cpu().numpy()
+                    losses = loss2.clone().detach().cpu()
                     if poll_clients:
-                        loss_mean, loss_std = torch.mean(losses), torch.std(losses) 
+                        loss_mean, loss_std = torch.mean(losses).item(), torch.std(losses).item()
                     else:
                         loss_mean, loss_std = None, None
                     loss2.mean().backward()
@@ -353,8 +353,8 @@ def experiment_ucb(
                         x, i, True, flops_interrupted
                     )
                     loss3 = criterion(output_final, y)
-                    losses = loss3.clone().detach().cpu().numpy()
-                    loss_mean, loss_std = torch.mean(losses), torch.std(losses) 
+                    losses = loss3.clone().detach().cpu()
+                    loss_mean, loss_std = torch.mean(losses).item(), torch.std(losses).item()
                     loss3.mean().backward()
                     interrupted_nn.module.backward(i, out=True)
                     interrupted_nn.module.step(i, out=True)
@@ -611,8 +611,8 @@ if __name__ == "__main__":
     discount        = 0.7
     poll_clients    = False
     ds              = "cifar10" if cifar else "tiny_imagenet"
-    experiment_name = f"{ds}_ucb_k_{k}_num_clients_{num_clients}_discount_{discount}"
-    interrupted     = True # Local Parallelism OFF
+    experiment_name = f"{ds}_ucb_k_{k}_num_clients_{num_clients}_discount_{discount}_polling_{poll_clients}"
+    interrupted     = True # Interruption OFF/ON
 
     if cifar:
         transform = transforms.Compose(

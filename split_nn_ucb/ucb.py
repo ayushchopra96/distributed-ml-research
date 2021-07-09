@@ -19,11 +19,11 @@ class UCB:
             if self.round_counter == 0:
                 # If it is the initial round
                 loss_mean = 0.
-                loss_std = 0.
+                loss_std = 100. # Assume large std
             else:
-                # Assume loss statistics are same as previous round
-                loss_mean = self.losses_mean[self.round_counter-1][client_id]
-                loss_std = self.losses_mean[self.round_counter-1][client_id]
+                # Assume loss statistics are discounted previous round's statistics
+                loss_mean = self.losses_mean[self.round_counter-1][client_id] * self.discount
+                loss_std = self.losses_mean[self.round_counter-1][client_id] * self.discount
 
         self.losses_mean[self.round_counter][client_id] = loss_mean
         self.losses_std[self.round_counter][client_id] = loss_std
