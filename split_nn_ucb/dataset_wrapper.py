@@ -41,14 +41,26 @@ class DataWrapper:
     def __len__(self):
         return self.num_batches
 
+    def total_len(self):
+        c = 0
+        for b in range(len(self)):
+            for i in self.batch_idx[b]:
+                c += 1
+        return c
+    
 if __name__ == "__main__":
+    ds_size = 45000
     ds = torch.utils.data.TensorDataset(
-        torch.randn(1024, 3, 32, 32),
-        torch.randint(0, 10, (1024, )).int()
+        torch.randn(ds_size, 3, 32, 32),
+        torch.randint(0, 10, (ds_size, )).int()
     )
-    wrapped = DataWrapper(ds, 31)
+    wrapped = DataWrapper(ds, 256)
     wrapped.shuffle()
     for ep in range(100):
+        c = 0
         for b in range(len(wrapped)):
             x, y = wrapped[b]
+            c += x.shape[0]
+        assert(c == wrapped.total_len() == ds_size)
         wrapped.shuffle()
+        assert(c == wrapped.total_len() == ds_size)

@@ -13,15 +13,20 @@ class UCB:
         self.max_history = 2048 # store data for only last 10000 steps
         self.end_round()
 
-    def update_client(self, client_id, losses, was_selected):
-        if isinstance(losses, torch.FloatTensor):
-            losses = losses.clone()
-        else:
-            losses = torch.tensor(losses)
+    def update_client(self, client_id, loss_mean, loss_std, was_selected):
+        if loss_mean is None and loss_std is None:
+            # loss_mean and loss_std are None if the client wasn't selected
+            if self.round_counter == 0:
+                # If it is the initial round
+                loss_mean = 0.
+                loss_std = 0.
+            else:
+                # Assume loss statistics are same as previous round
+                loss_mean = self.losses_mean[self.round_counter-1][client_id]
+                loss_std = self.losses_mean[self.round_counter-1][client_id]
 
-        mean, std = torch.mean(losses), torch.std(losses)
-        self.losses_mean[self.round_counter][client_id] = mean
-        self.losses_std[self.round_counter][client_id] = std
+        self.losses_mean[self.round_counter][client_id] = loss_mean
+        self.losses_std[self.round_counter][client_id] = loss_std
         self.selection_mask[self.round_counter][client_id] = 1. if was_selected else 0.
 
     def end_round(self):
@@ -56,8 +61,8 @@ def advantage(
     dataset_ratio
 ):
     # discount_hparam decides how much to weigh previous round's information.
-    # discount_hparam can be in [0, 1]. If equal to 0 -> don't use any old information
-    # If equal to 1 -> weigh old information equally to new information
+    # discount_hparam can be in [0, 1]. If equal to 1 -> don't use any old information
+    # If equal to 0 -> weigh old information equally to new information
 
     # client_losses -> (num_rounds, num_clients)
 

@@ -7,7 +7,6 @@ from fvcore.nn import FlopCountAnalysis
 import random
 from tqdm import trange
 from torch.multiprocessing import Pool
-from models import resnet34
 import os
 import numpy as np
 import torch
@@ -30,7 +29,7 @@ from torch.autograd import Variable
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.manual_seed(123)
-# from models_cifar import resnet32
+from models_cifar import resnet32
 
 # from tqdm.notebook import
 
@@ -240,7 +239,7 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
 
     alice_models = []
     for i in range(num_clients):
-        model_a = resnet34(hooked=True)
+        model_a = resnet32(hooked=True)
         alice_models.append(model_a)
 
     opt_list_alice = []
@@ -250,14 +249,14 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
         alice.train()
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-            optim.Adam(alice.parameters(), lr=5e-3, weight_decay=1e-4)
+            optim.Adam(alice.parameters(), weight_decay=1e-4)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
             #             ReduceLROnPlateau(opt_list_alice[-1], mode='max', factor=0.7, patience=5)
         )
 
-    model_bob = resnet34(hooked=False)
+    model_bob = resnet32(hooked=False)
 #     opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
     opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
@@ -288,6 +287,7 @@ def experiment_ucb(
     k,
     discount_hparam,
     dataset_sizes,
+    poll_clients,
     steps=None,
     num_clients=100,
 ):
@@ -341,6 +341,10 @@ def experiment_ucb(
                     )
                     loss2 = criterion(intermediate_output, y)
                     losses = loss2.clone().detach().cpu().numpy()
+                    if poll_clients:
+                        loss_mean, loss_std = torch.mean(losses), torch.std(losses) 
+                    else:
+                        loss_mean, loss_std = None, None
                     loss2.mean().backward()
                     interrupted_nn.module.step(i, out=False)
                 else:
@@ -350,13 +354,14 @@ def experiment_ucb(
                     )
                     loss3 = criterion(output_final, y)
                     losses = loss3.clone().detach().cpu().numpy()
+                    loss_mean, loss_std = torch.mean(losses), torch.std(losses) 
                     loss3.mean().backward()
                     interrupted_nn.module.backward(i, out=True)
                     interrupted_nn.module.step(i, out=True)
 
                 steps += 1
 
-                bandit.update_client(i, losses, i in selected_ids)
+                bandit.update_client(i, loss_mean, loss_std, i in selected_ids)
 
                 # copy params
                 split_nn.module.copy_params(i)
@@ -601,12 +606,13 @@ class RandomGammaCorrection(object):
 
 if __name__ == "__main__":
     cifar           = True
-    num_clients     = 15
-    k               = 3
+    num_clients     = 10
+    k               = 2
     discount        = 0.7
+    poll_clients    = False
     ds              = "cifar10" if cifar else "tiny_imagenet"
-    experiment_name = f"{ds}_ucb_k_{k}_num_clients_{num_clients}"
-    interrupted     = False # Local Parallelism OFF
+    experiment_name = f"{ds}_ucb_k_{k}_num_clients_{num_clients}_discount_{discount}"
+    interrupted     = True # Local Parallelism OFF
 
     if cifar:
         transform = transforms.Compose(
@@ -693,14 +699,16 @@ if __name__ == "__main__":
         cifar_train_loader_list.append(cifar_train_loader)
         train_sizes[i] = train_size
 
-    epochs = 80
-    # interrupt_range = [0, int(0.75*epochs)]
-    interrupt_range = [-2, 0]  # Hack for not using Local Parallelism
+    epochs = 150
+    if interrupted:
+        interrupt_range = [0, int(0.75*epochs)]
+    else:
+        interrupt_range = [-2, 0]  # Hack for not using Local Parallelism
 
     split_nn = get_model(num_clients=num_clients,
                          interrupted=False, cifar=cifar)
     interrupted_nn = get_model(
-        num_clients=num_clients, interrupted=False, cifar=cifar)
+        num_clients=num_clients, interrupted=interrupted, cifar=cifar)
 
     (
         acc_split_list,
@@ -716,6 +724,7 @@ if __name__ == "__main__":
         cifar_train_loader_list,
         cifar_test_loader_list,
         k=3,
+        poll_clients=poll_clients,
         discount_hparam=0.7,
         dataset_sizes=train_sizes,
         interrupt_range=interrupt_range,
