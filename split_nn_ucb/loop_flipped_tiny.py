@@ -1,3 +1,6 @@
+import fire
+from dataclasses import dataclass
+from models_cifar import resnet32
 from ucb import UCB
 from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
@@ -7,7 +10,6 @@ from fvcore.nn import FlopCountAnalysis
 import random
 from tqdm import trange
 from torch.multiprocessing import Pool
-from models import resnet34
 import os
 import numpy as np
 import torch
@@ -30,7 +32,6 @@ from torch.autograd import Variable
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.manual_seed(123)
-# from models_cifar import resnet32
 
 # from tqdm.notebook import
 
@@ -39,8 +40,6 @@ torch.manual_seed(123)
 
 # from torch.utils.tensorboard import SummaryWriter
 
-
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
@@ -203,11 +202,11 @@ class SplitNN(nn.Module):
 
         for images, labels in test_loader:
             if self.interrupted:
-                images = images.to("cuda:0")
-                labels = labels.to("cuda:0")
+                images = images.to("cuda")
+                labels = labels.to("cuda")
             else:
-                images = images.to("cuda:0")
-                labels = labels.to("cuda:0")
+                images = images.to("cuda")
+                labels = labels.to("cuda")
 
             output, output_final, f = self.forward(
                 images, i, out=True, flops=0)
@@ -240,7 +239,7 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
 
     alice_models = []
     for i in range(num_clients):
-        model_a = resnet34(hooked=True)
+        model_a = resnet32(hooked=True)
         alice_models.append(model_a)
 
     opt_list_alice = []
@@ -257,7 +256,7 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
             #             ReduceLROnPlateau(opt_list_alice[-1], mode='max', factor=0.7, patience=5)
         )
 
-    model_bob = resnet34(hooked=False)
+    model_bob = resnet32(hooked=False)
 #     opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
     opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
@@ -308,7 +307,7 @@ def experiment_ucb(
     criterion = nn.CrossEntropyLoss(reduction='none')
     flag = True
     t = trange(epochs, desc="", leave=True)
-    device_1, device_2 = "cuda:0", "cuda:0"
+    device_1, device_2 = "cuda", "cuda"
     split_nn = nn.DataParallel(split_nn).to(device_1)
     interrupted_nn = nn.DataParallel(interrupted_nn).to(device_2)
 
@@ -316,8 +315,8 @@ def experiment_ucb(
     for ep in t:  # 200
         for b in range(len(train_loader_list[0])):
             for i in range(num_clients):  # 100
-            # losses = []
-            # for x, y in train_loader_list[i]:
+                # losses = []
+                # for x, y in train_loader_list[i]:
                 x, y = train_loader_list[i][b]
                 # zero grads
                 split_nn.module.zero_grads(i)
@@ -341,9 +340,10 @@ def experiment_ucb(
                         x, i, False, flops_interrupted
                     )
                     loss2 = criterion(intermediate_output, y)
-                    losses = loss2.clone().detach().cpu().numpy()
+                    losses = loss2.clone().detach().cpu()
                     if poll_clients:
-                        loss_mean, loss_std = torch.mean(losses), torch.std(losses) 
+                        loss_mean, loss_std = torch.mean(
+                            losses).item(), torch.std(losses).item()
                     else:
                         loss_mean, loss_std = None, None
                     loss2.mean().backward()
@@ -354,8 +354,9 @@ def experiment_ucb(
                         x, i, True, flops_interrupted
                     )
                     loss3 = criterion(output_final, y)
-                    losses = loss3.clone().detach().cpu().numpy()
-                    loss_mean, loss_std = torch.mean(losses), torch.std(losses) 
+                    losses = loss3.clone().detach().cpu()
+                    loss_mean, loss_std = torch.mean(
+                        losses).item(), torch.std(losses).item()
                     loss3.mean().backward()
                     interrupted_nn.module.backward(i, out=True)
                     interrupted_nn.module.step(i, out=True)
@@ -605,15 +606,32 @@ class RandomGammaCorrection(object):
             return transforms.functional.adjust_gamma(image, self.gamma, gain=1)
 
 
+@dataclass
+class hparams:
+    cifar: bool = False
+    num_clients: int = 10
+    k: int = 2
+    discount: float = 0.7
+    poll_clients: bool = False
+    interrupted: bool = True  # Interruption OFF/ON
+    batch_size: int = 32
+    epochs: int = 150
+
+
 if __name__ == "__main__":
-    cifar           = False
-    num_clients     = 15
-    k               = 3
-    discount        = 0.7
-    poll_clients    = False
-    ds              = "cifar10" if cifar else "tiny_imagenet"
-    experiment_name = f"{ds}_ucb_k_{k}_num_clients_{num_clients}_discount_{discount}"
-    interrupted     = True # Local Parallelism OFF
+    hparams_ = fire.Fire(hparams)
+
+    ds = "cifar10" if hparams_.cifar else "tiny_imagenet"
+    experiment_name = f"{ds}_ucb_k_{hparams_.k}_num_clients_{hparams_.num_clients}_discount_{hparams_.discount}_polling_{hparams_.poll_clients}"
+
+    cifar = hparams_.cifar
+    num_clients = hparams_.num_clients
+    k = hparams_.k
+    discount = hparams_.discount
+    poll_clients = hparams_.poll_clients
+    interrupted = hparams_.interrupted  # Interruption OFF/ON
+    batch_size = hparams_.batch_size
+    epochs = hparams_.epochs
 
     if cifar:
         transform = transforms.Compose(
@@ -676,9 +694,8 @@ if __name__ == "__main__":
         testset = dsets.ImageFolder(val_dir, transform=transform_val)
 
     cifar_test_loader_list = torch.utils.data.DataLoader(
-        testset, batch_size=256, shuffle=False, num_workers=os.cpu_count(), pin_memory=True
+        testset, batch_size=batch_size, shuffle=False, num_workers=os.cpu_count(), pin_memory=True
     )
-    batch_size = 256
 
     # split dataset into num_clients
     cifar_train_loader_list = []
@@ -700,7 +717,6 @@ if __name__ == "__main__":
         cifar_train_loader_list.append(cifar_train_loader)
         train_sizes[i] = train_size
 
-    epochs = 150
     if interrupted:
         interrupt_range = [0, int(0.75*epochs)]
     else:
