@@ -9,8 +9,8 @@ commands = [
     --k 2 --discount 0.7 \
     --poll_clients True \
     --interrupted False \
-    --batch_size 32 \
-    --epochs 150
+    --batch_size 64 \
+    --epochs 200
     ''',
 
     # UCB-CS + No Polling
@@ -21,8 +21,8 @@ commands = [
     --k 2 --discount 0.7 \
     --poll_clients False \
     --interrupted False \
-    --batch_size 32 \
-    --epochs 150
+    --batch_size 64 \
+    --epochs 200
     ''',
 
     # UCB-CS + Polling + Interrupted
@@ -33,8 +33,8 @@ commands = [
     --k 2 --discount 0.7 \
     --poll_clients True \
     --interrupted True \
-    --batch_size 32 \
-    --epochs 150
+    --batch_size 64 \
+    --epochs 200
     ''',
 
     # UCB-CS + No Polling + Interrupted
@@ -45,8 +45,8 @@ commands = [
     --k 2 --discount 0.7 \
     --poll_clients False \
     --interrupted True \
-    --batch_size 32 \
-    --epochs 150
+    --batch_size 64 \
+    --epochs 200
     '''
 ]
 
