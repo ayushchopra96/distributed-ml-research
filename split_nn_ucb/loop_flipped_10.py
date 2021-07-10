@@ -621,8 +621,6 @@ class hparams:
 
 if __name__ == "__main__":
     hparams_ = fire.Fire(hparams)
-    print(hparams_)
-    exit()
     ds = "cifar10" if hparams_.cifar else "tiny_imagenet"
     experiment_name = f"{ds}_ucb_k_{hparams_.k}_num_clients_{hparams_.num_clients}_discount_{hparams_.discount}_polling_{hparams_.poll_clients}"
 
