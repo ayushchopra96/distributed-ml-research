@@ -1,4 +1,4 @@
-import fire
+from argparse import ArgumentParser
 from dataclasses import dataclass
 from models_cifar import resnet32
 from ucb import UCB
@@ -608,7 +608,7 @@ class RandomGammaCorrection(object):
 
 
 @dataclass
-class hparams:
+class hparam:
     cifar: bool = True
     num_clients: int = 10
     k: int = 2
@@ -620,7 +620,11 @@ class hparams:
 
 
 if __name__ == "__main__":
-    hparams_ = fire.Fire(hparams)
+    parser = ArgumentParser()
+    for k, v in hparam().__dict__.items():
+        parser.add_argument(f"--{k}", default=v, type=type(v))
+    hparams_ = parser.parse_args()
+
     ds = "cifar10" if hparams_.cifar else "tiny_imagenet"
     experiment_name = f"{ds}_ucb_k_{hparams_.k}_num_clients_{hparams_.num_clients}_discount_{hparams_.discount}_polling_{hparams_.poll_clients}"
 
