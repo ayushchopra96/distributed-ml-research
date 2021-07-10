@@ -41,7 +41,8 @@ torch.manual_seed(123)
 # from torch.utils.tensorboard import SummaryWriter
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device(
+    f"cuda:{os.environ['CUDA_VISIBLE_DEVICES']}" if torch.cuda.is_available() else "cpu")
 print(device)
 
 # writer = SummaryWriter()
@@ -202,11 +203,11 @@ class SplitNN(nn.Module):
 
         for images, labels in test_loader:
             if self.interrupted:
-                images = images.to("cuda")
-                labels = labels.to("cuda")
+                images = images.to(device)
+                labels = labels.to(device)
             else:
-                images = images.to("cuda")
-                labels = labels.to("cuda")
+                images = images.to(device)
+                labels = labels.to(device)
 
             output, output_final, f = self.forward(
                 images, i, out=True, flops=0)
@@ -307,7 +308,7 @@ def experiment_ucb(
     criterion = nn.CrossEntropyLoss(reduction='none')
     flag = True
     t = trange(epochs, desc="", leave=True)
-    device_1, device_2 = "cuda", "cuda"
+    device_1, device_2 = device, device
     split_nn = nn.DataParallel(split_nn).to(device_1)
     interrupted_nn = nn.DataParallel(interrupted_nn).to(device_2)
 
@@ -620,7 +621,8 @@ class hparams:
 
 if __name__ == "__main__":
     hparams_ = fire.Fire(hparams)
-
+    print(hparams_)
+    exit()
     ds = "cifar10" if hparams_.cifar else "tiny_imagenet"
     experiment_name = f"{ds}_ucb_k_{hparams_.k}_num_clients_{hparams_.num_clients}_discount_{hparams_.discount}_polling_{hparams_.poll_clients}"
 
