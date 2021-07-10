@@ -41,7 +41,7 @@ torch.manual_seed(123)
 # from torch.utils.tensorboard import SummaryWriter
 
 
-device = torch.cuda.device(
+device = torch.device(
     int(os.environ['CUDA_VISIBLE_DEVICES']) if torch.cuda.is_available() else "cpu")
 print(device)
 
@@ -309,8 +309,8 @@ def experiment_ucb(
     flag = True
     t = trange(epochs, desc="", leave=True)
     device_1, device_2 = device, device
-    split_nn = nn.DataParallel(split_nn).to(device_1)
-    interrupted_nn = nn.DataParallel(interrupted_nn).to(device_2)
+    split_nn = nn.DataParallel(split_nn, output_device=device_1)
+    interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device_2)
 
     selected_ids = random.sample(list(range(num_clients)), k)
     for ep in t:  # 200
