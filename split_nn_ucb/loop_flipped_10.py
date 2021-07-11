@@ -41,8 +41,7 @@ torch.manual_seed(123)
 # from torch.utils.tensorboard import SummaryWriter
 
 
-device = torch.device(
-    int(os.environ['CUDA_VISIBLE_DEVICES']) if torch.cuda.is_available() else "cpu")
+device = torch.cuda.device("cuda") if torch.cuda.is_available() else "cpu"
 print(device)
 
 # writer = SummaryWriter()
