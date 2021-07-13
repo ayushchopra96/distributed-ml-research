@@ -29,7 +29,7 @@ from dataset_wrapper import DataWrapper
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
 from triplettorch import TripletDataset
-from triplettorch import AllTripletMiner
+from triplettorch import AllTripletMiner, HardNegativeTripletMiner
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -309,7 +309,7 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    miner = AllTripletMiner(0.5).cuda()
+    miner = HardNegativeTripletMiner(0.5).cuda() #AllTripletMiner(0.5).cuda()
 
     flops_split, flops_interrupted, steps = 0, 0, 0
     (

@@ -4,11 +4,10 @@ commands = [
     # UCB-CS + Polling
     '''
     CUDA_VISIBLE_DEVICES=0 python3 loop_flipped_10.py \
-    --cifar True \
+    --cifar \
     --num_clients 10 \
     --k 2 --discount 0.7 \
-    --poll_clients True \
-    --interrupted False \
+    --poll_clients \
     --batch_size 64 \
     --epochs 200
     ''',
@@ -16,11 +15,9 @@ commands = [
     # UCB-CS + No Polling
     '''
     CUDA_VISIBLE_DEVICES=1 python3 loop_flipped_10.py \
-    --cifar True \
+    --cifar \
     --num_clients 10 \
     --k 2 --discount 0.7 \
-    --poll_clients False \
-    --interrupted False \
     --batch_size 64 \
     --epochs 200
     ''',
@@ -28,11 +25,11 @@ commands = [
     # UCB-CS + Polling + Interrupted
     '''
     CUDA_VISIBLE_DEVICES=2 python3 loop_flipped_10.py \
-    --cifar True \
+    --cifar \
     --num_clients 10 \
     --k 2 --discount 0.7 \
-    --poll_clients True \
-    --interrupted True \
+    --poll_clients \
+    --interrupted \
     --batch_size 64 \
     --epochs 200
     ''',
@@ -40,11 +37,10 @@ commands = [
     # UCB-CS + No Polling + Interrupted
     '''
     CUDA_VISIBLE_DEVICES=3 python3 loop_flipped_10.py \
-    --cifar True \
+    --cifar \
     --num_clients 10 \
     --k 2 --discount 0.7 \
-    --poll_clients False \
-    --interrupted True \
+    --interrupted \
     --batch_size 64 \
     --epochs 200
     '''
