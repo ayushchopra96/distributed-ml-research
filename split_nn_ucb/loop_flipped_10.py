@@ -309,7 +309,7 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    miner = HardNegativeTripletMiner(0.5).cuda() #AllTripletMiner(0.5).cuda()
+    miner = HardNegativeTripletMiner(0.5).cuda()  # AllTripletMiner(0.5).cuda()
 
     flops_split, flops_interrupted, steps = 0, 0, 0
     (
@@ -519,8 +519,12 @@ if __name__ == "__main__":
             parser.add_argument(f"--{k}", default=v, type=type(v))
     hparams_ = parser.parse_args()
     print(hparams_)
-    ds = "cifar10" if hparams_.cifar else "tiny_imagenet"
-    experiment_name = f"{ds}_ucb_k_{hparams_.k}_num_clients_{hparams_.num_clients}_discount_{hparams_.discount}_polling_{hparams_.poll_clients}"
+    temp = []
+    for k, v in hparams_.__dict__.items():
+        temp.append(f"{k}_{v}")
+
+    experiment_name = "-".join(temp)
+    print(experiment_name)
 
     cifar = hparams_.cifar
     num_clients = hparams_.num_clients
@@ -684,6 +688,7 @@ if __name__ == "__main__":
         "Flops Interrupted": str(flops_interrupted_list),
         "Time": str(time_list),
         "Steps": steps_list,
+        "hparams": hparams_.__dict__
     }
 
     with open(f"stats/{ds}/{experiment_name}.json", "w") as f:
