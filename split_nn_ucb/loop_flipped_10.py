@@ -333,7 +333,11 @@ def experiment_ucb(
 
     selected_ids = random.sample(list(range(num_clients)), k)
     for ep in t:  # 200
-        for b in range(len(train_loader_list[0])):
+        batch_iter = trange(len(train_loader_list[0]))
+        for b in batch_iter:
+            batch_iter.set_description(
+                f"selected_ids: {selected_ids}", refresh=True
+            )
             for i in range(num_clients):  # 100
                 x, y = train_loader_list[i][b]
                 # zero grads
@@ -398,7 +402,8 @@ def experiment_ucb(
 
         for i in range(num_clients):
             train_loader_list[i].shuffle()
-            contrastive_list[i].shuffle()
+            if use_contrastive:
+                contrastive_list[i].shuffle()
         # do eval and record after epoch
         acc_split, alice_split = split_nn.module.evaluator(test_loader, 0)
         acc_interrupted, alice_interrupted = interrupted_nn.module.evaluator(
@@ -596,7 +601,7 @@ if __name__ == "__main__":
         testset = dsets.ImageFolder(val_dir, transform=transform_val)
 
     cifar_test_loader_list = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False, num_workers=os.cpu_count(), pin_memory=True
+        testset, batch_size=batch_size, shuffle=False, num_workers=os.cpu_count(), pin_memory=not cifar
     )
 
     # split dataset into num_clients
@@ -614,23 +619,25 @@ if __name__ == "__main__":
             batch_size=batch_size,
             shuffle=True,
             num_workers=os.cpu_count(),
-            pin_memory=True,
+            pin_memory=not cifar,
         )
         cifar_train_loader.shuffle()
         cifar_train_loader_list.append(cifar_train_loader)
-
-        labels = [ts[i][1] for i in range(len(ts))]
-        def fn(index): return ts[index][0].unsqueeze(0).numpy()
-        contrastive = TripletDataset(labels, fn, len(ts), 4)
-        contrastive = DataWrapper(
-            ts,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=os.cpu_count(),
-            pin_memory=True,
-        )
-        contrastive.shuffle()
-        contrastive_dataset_list.append(contrastive)
+        if hparams_.use_contrastive:
+            labels = [ts[i][1] for i in range(len(ts))]
+            def fn(index): return ts[index][0].unsqueeze(0).numpy()
+            contrastive = TripletDataset(labels, fn, len(ts), 4)
+            contrastive = DataWrapper(
+                ts,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=os.cpu_count(),
+                pin_memory=not cifar,
+            )
+            contrastive.shuffle()
+            contrastive_dataset_list.append(contrastive)
+        else:
+            contrastive_dataset_list.append(None)
 
         train_sizes[i] = train_size
 
@@ -658,7 +665,7 @@ if __name__ == "__main__":
         cifar_train_loader_list,
         contrastive_dataset_list,
         cifar_test_loader_list,
-        k=3,
+        k=hparams_.k,
         use_contrastive=hparams_.use_contrastive,
         use_ucb=hparams_.use_ucb,
         poll_clients=poll_clients,
