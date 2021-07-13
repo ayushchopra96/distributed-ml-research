@@ -28,6 +28,8 @@ from torch.utils.data import Dataset, DataLoader
 from dataset_wrapper import DataWrapper
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
+from triplettorch import TripletDataset
+from triplettorch import AllTripletMiner
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -276,21 +278,39 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
     return split_model
 
 
+def to_interrupt_or_not(use_ucb, selected_ids, id, interrupt_range, ep):
+    ucb_interrupt = False
+
+    in_interrupt_range = False
+    if ep in range(*interrupt_range):
+        in_interrupt_range = True
+
+    if i not in selected_ids:
+        ucb_interrupt = True
+
+    return (ucb_interrupt and use_ucb) or in_interrupt_range
+
+
 def experiment_ucb(
     experiment_name,
     split_nn,
     interrupted_nn,
     train_loader_list,
+    contrastive_list,
     test_loader,
     interrupt_range,
     epochs,
     k,
+    use_ucb,
+    use_contrastive,
     discount_hparam,
     dataset_sizes,
     poll_clients,
     steps=None,
     num_clients=100,
 ):
+    miner = AllTripletMiner(0.5).cuda()
+
     flops_split, flops_interrupted, steps = 0, 0, 0
     (
         flops_split_list,
@@ -315,8 +335,6 @@ def experiment_ucb(
     for ep in t:  # 200
         for b in range(len(train_loader_list[0])):
             for i in range(num_clients):  # 100
-                # losses = []
-                # for x, y in train_loader_list[i]:
                 x, y = train_loader_list[i][b]
                 # zero grads
                 split_nn.module.zero_grads(i)
@@ -334,12 +352,18 @@ def experiment_ucb(
                 split_nn.module.step(i, out=True)
 
                 # interrupt activation flow
-                if ep in range(*interrupt_range) or i not in selected_ids:
+                if to_interrupt_or_not(use_ucb, selected_ids, i, interrupt_range, ep):
+                    if use_contrastive:
+                        x, y = contrastive_list[i][b]
                     x, y = x.to(device_2), y.to(device_2)
                     intermediate_output, x_next, flops_interrupted = interrupted_nn.module(
                         x, i, False, flops_interrupted
                     )
-                    loss2 = criterion(intermediate_output, y)
+                    if use_contrastive:
+                        loss2, _ = miner(
+                            y, intermediate_output.reshape(x.shape[0], -1))
+                    else:
+                        loss2 = criterion(intermediate_output, y)
                     losses = loss2.clone().detach().cpu()
                     if poll_clients:
                         loss_mean, loss_std = torch.mean(
@@ -369,11 +393,12 @@ def experiment_ucb(
                 split_nn.module.copy_params(i)
                 interrupted_nn.module.copy_params(i)
 
-                selected_ids = bandit.select_clients()
-                bandit.end_round()
+            selected_ids = bandit.select_clients()
+            bandit.end_round()
 
         for i in range(num_clients):
             train_loader_list[i].shuffle()
+            contrastive_list[i].shuffle()
         # do eval and record after epoch
         acc_split, alice_split = split_nn.module.evaluator(test_loader, 0)
         acc_interrupted, alice_interrupted = interrupted_nn.module.evaluator(
@@ -420,141 +445,6 @@ def experiment_ucb(
                        f"runs/{experiment_name}/split_nn_{steps}")
             torch.save(interrupted_nn.state_dict(),
                        f"runs/{experiment_name}/interrupted_nn_{steps}")
-
-    return (
-        acc_split_list,
-        acc_interrupted_list,
-        flops_split_list,
-        flops_interrupted_list,
-        time_list,
-        steps_list,
-    )
-
-
-def experiment_avg_grad(
-    split_nn,
-    interrupted_nn,
-    train_loader_list,
-    test_loader,
-    interrupt_range,
-    epochs,
-    steps=None,
-    num_clients=100,
-):
-    flops_split, flops_interrupted, steps = 0, 0, 0
-    (
-        flops_split_list,
-        flops_interrupted_list,
-        acc_split_list,
-        acc_interrupted_list,
-        steps_list,
-        time_list,
-    ) = ([], [], [], [], [], [])
-    wallclock_start = time()
-
-    criterion = nn.CrossEntropyLoss()
-    patience = 20
-    early_stopping_counter = 0
-    flag = True
-
-    # create iterators
-    batch_iterators = []
-    for i, loader in enumerate(train_loader_list):
-        batch_iterators.append(iter(loader))
-
-    while flag:
-        t = trange(epochs, desc="", leave=True)
-        for ep in t:
-            grad_list_split = []
-            grad_list_interrupted = []
-            for i in range(num_clients):
-                try:
-                    x, y = next(batch_iterators[i])
-                except StopIteration:
-                    try:
-                        batch_iterators[i] = iter(train_loader_list[i])
-                        x, y = next(batch_iterators[i])
-                    except:
-                        print("Hit unexpected Exception!")
-                        continue
-
-                x, y = x.to(device), y.to(device)
-                # zero grads
-                split_nn.zero_grads(i)
-                interrupted_nn.zero_grads(i)
-
-                # split learning avg grad
-                _, output_final, flops_split = split_nn(
-                    x, i, True, flops_split)
-                loss1 = criterion(output_final, y)
-                loss1.backward()
-                grad = split_nn.get_grad()
-                grad_list_split.append(grad)
-
-                # interrupt activation flow
-                if steps in range(*interrupt_range):
-                    intermediate_output, x_next, flops_interrupted = interrupted_nn(
-                        x, i, False, flops_interrupted)
-                    loss2 = criterion(intermediate_output, y)
-                    loss2.backward()
-                    #                     interrupted_nn.backward(i, out=False)
-                    interrupted_nn.step(i, out=False)
-
-                else:
-                    _, output_final, flops_interrupted = interrupted_nn(
-                        x, i, True, flops_interrupted)
-                    loss2 = criterion(output_final, y)
-                    loss2.backward()
-                    grad = interrupted_nn.get_grad()
-                    grad_list_interrupted.append(grad)
-
-                steps += 1
-
-            # take step now
-            grad_split = sum(grad_list_split) / len(grad_list_split)
-            split_nn.backward(i, grad_to_client=grad_split)
-            split_nn.step(0)
-            del grad_list_split
-
-            if len(grad_list_interrupted) > 0:
-                grad_interrupted = sum(grad_list_interrupted) / len(
-                    grad_list_interrupted
-                )
-                interrupted_nn.backward(
-                    i, grad_to_client=grad_interrupted, out=True)
-                interrupted_nn.step(0)
-                del grad_list_interrupted
-
-            if ep % 10 == 0 and ep > 0:
-                # do eval and record
-                for i in range(num_clients):
-                    acc_split, alice_split = split_nn.evaluator(test_loader, i)
-                    acc_interrupted, alice_interrupted = interrupted_nn.evaluator(
-                        test_loader, i
-                    )
-                    acc_interrupted_list.append(acc_interrupted)
-                    acc_split_list.append(acc_split)
-                    steps_list.append(steps)
-                    time_list.append(time() - wallclock_start)
-                    flops_split_list.append(flops_split)
-                    flops_interrupted_list.append(flops_interrupted)
-
-                    # early stopping bs
-                    if acc_split_list[-(early_stopping_counter + 1)] > acc_split:
-                        early_stopping_counter += 1
-
-                    # trigger scheduler
-                    split_nn.scheduler_step(alice_split, acc_split, i)
-                    interrupted_nn.scheduler_step(
-                        alice_interrupted, acc_interrupted, i)
-
-                    # set description
-                    t.set_description(
-                        f"Split: {acc_split}, Interrupted: {acc_interrupted}", refresh=True)
-
-        # check early_stopping
-        if steps > 190000:
-            flag = False
 
     return (
         acc_split_list,
@@ -616,14 +506,19 @@ class hparam:
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
     epochs: int = 150
+    use_ucb: bool = True
+    use_contrastive: bool = True
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     for k, v in hparam().__dict__.items():
-        parser.add_argument(f"--{k}", default=v, type=type(v))
+        if isinstance(v, bool):
+            parser.add_argument(f"--{k}", default=False, action='store_true')
+        else:
+            parser.add_argument(f"--{k}", default=v, type=type(v))
     hparams_ = parser.parse_args()
-
+    print(hparams_)
     ds = "cifar10" if hparams_.cifar else "tiny_imagenet"
     experiment_name = f"{ds}_ucb_k_{hparams_.k}_num_clients_{hparams_.num_clients}_discount_{hparams_.discount}_polling_{hparams_.poll_clients}"
 
@@ -702,6 +597,7 @@ if __name__ == "__main__":
 
     # split dataset into num_clients
     cifar_train_loader_list = []
+    contrastive_dataset_list = []
     train_sizes = torch.zeros((num_clients,))
     for i in range(num_clients):
         torch.manual_seed(i)
@@ -718,6 +614,20 @@ if __name__ == "__main__":
         )
         cifar_train_loader.shuffle()
         cifar_train_loader_list.append(cifar_train_loader)
+
+        labels = [ts[i][1] for i in range(len(ts))]
+        def fn(index): return ts[index][0].unsqueeze(0).numpy()
+        contrastive = TripletDataset(labels, fn, len(ts), 4)
+        contrastive = DataWrapper(
+            ts,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=os.cpu_count(),
+            pin_memory=True,
+        )
+        contrastive.shuffle()
+        contrastive_dataset_list.append(contrastive)
+
         train_sizes[i] = train_size
 
     if interrupted:
@@ -742,8 +652,11 @@ if __name__ == "__main__":
         split_nn,
         interrupted_nn,
         cifar_train_loader_list,
+        contrastive_dataset_list,
         cifar_test_loader_list,
         k=3,
+        use_contrastive=hparams_.use_contrastive,
+        use_ucb=hparams_.use_ucb,
         poll_clients=poll_clients,
         discount_hparam=0.7,
         dataset_sizes=train_sizes,
