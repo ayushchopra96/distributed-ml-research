@@ -328,8 +328,11 @@ def experiment_ucb(
     flag = True
     t = trange(epochs, desc="", leave=True)
     device_1, device_2 = device, device
-    split_nn = nn.DataParallel(split_nn, output_device=device_1)
-    interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device_2)
+    split_nn = nn.DataParallel(split_nn, output_device=device)
+    split_nn.module.cuda()
+
+    interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device)
+    interrupted_nn.module.cuda()
 
     selected_ids = random.sample(list(range(num_clients)), k)
     for ep in t:  # 200
@@ -684,7 +687,8 @@ if __name__ == "__main__":
         "Flops SplitNN": flops_split_list,
         "Flops Interrupted": flops_interrupted_list,
         "Time": time_list,
-        "Steps": steps_list
+        "Steps": steps_list,
+        "hparams": hparams_.__dict__
     }
     print(out_dict)
 
@@ -698,7 +702,7 @@ if __name__ == "__main__":
         "hparams": hparams_.__dict__
     }
 
-    with open(f"stats/{ds}/{experiment_name}.json", "w") as f:
+    with open(f"stats/{experiment_name}.json", "w") as f:
         json.dump(out_dict, f)
 
     # split_nn = get_model(num_clients=num_clients, interrupted=False, avg=True)
