@@ -328,10 +328,10 @@ def experiment_ucb(
     flag = True
     t = trange(epochs, desc="", leave=True)
     device_1, device_2 = device, device
-    split_nn = nn.DataParallel(split_nn, output_device=device)
+    split_nn = nn.DataParallel(split_nn, output_device=device_1)
     split_nn.module.cuda()
 
-    interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device)
+    interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device_2)
     interrupted_nn.module.cuda()
 
     selected_ids = random.sample(list(range(num_clients)), k)
@@ -672,7 +672,7 @@ if __name__ == "__main__":
         use_contrastive=hparams_.use_contrastive,
         use_ucb=hparams_.use_ucb,
         poll_clients=poll_clients,
-        discount_hparam=0.7,
+        discount_hparam=hparams_.discount,
         dataset_sizes=train_sizes,
         interrupt_range=interrupt_range,
         epochs=epochs,
