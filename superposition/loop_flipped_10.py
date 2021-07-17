@@ -70,8 +70,8 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
         )
 
     model_bob = resnet32(hooked=False)
-#     opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-    opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
+    opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
+    #opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
 #     scheduler_bob = ReduceLROnPlateau(opt_bob, mode='max', factor=0.7, patience=5)
 
