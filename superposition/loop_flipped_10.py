@@ -62,7 +62,7 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
             optim.Adam(
-                alice_models.client_models[i].parameters(), weight_decay=1e-4)
+                alice_models.client_models[i].parameters(), lr=2e-3, weight_decay=1e-4)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
@@ -195,22 +195,11 @@ def experiment_ucb(
         acc_split, alice_split = split_nn.evaluator(test_loader)
 
         # trigger scheduler bob after a warmup of 10 epochs
-        if ep > 10:
-            if ep in range(*interrupt_range):
-                oit = False
-            else:
-                oit = True
+        if ep >= 10:
+            if ep not in range(*interrupt_range):
+                out = True
                 split_nn.scheduler_step(
-                    num_clients-1, acc_split, out=oit, step_bob=True)
-
-            for i in range(0, num_clients-1):
-                # trigger scheduler alices
-                if ep in range(*interrupt_range):
-                    oit = False
-                else:
-                    oit = True
-                    split_nn.scheduler_step(
-                        i, acc_split, out=oit, step_bob=False)
+                    acc_split, out=out, step_bob=True)
 
         acc_split_list.append(acc_split)
         steps_list.append(steps)
