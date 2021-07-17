@@ -31,6 +31,8 @@ from triplettorch import AllTripletMiner, HardNegativeTripletMiner
 from split_nn import SplitNN, Clients, Server
 from ucb import UCB
 
+os.makedirs("./stats/", exist_ok=True)
+
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.manual_seed(123)
@@ -210,17 +212,15 @@ def experiment_ucb(
             f"Split: {acc_split}, Steps: {steps}", refresh=True
         )
 
-        if ep % 50 == 0 and ep > 0:
-            if not os.path.isdir(f"runs/{experiment_name}/"):
-                os.makedirs(f"runs/{experiment_name}/", exist_ok=True)
-            # torch.save(split_nn.state_dict(),
-            #            f"runs/{experiment_name}/split_nn_{steps}")
+        # if ep % 50 == 0 and ep > 0:
+        #     if not os.path.isdir(f"runs/{experiment_name}/"):
+        #         os.makedirs(f"runs/{experiment_name}/", exist_ok=True)
+        # torch.save(split_nn.state_dict(),
+        #            f"runs/{experiment_name}/split_nn_{steps}")
 
     return (
         acc_split_list,
-        acc_interrupted_list,
         flops_split_list,
-        flops_interrupted_list,
         time_list,
         steps_list,
     )
@@ -385,9 +385,7 @@ if __name__ == "__main__":
                          interrupted=hparams_.use_vanilla, cifar=cifar)
     (
         acc_split_list,
-        acc_interrupted_list,
         flops_split_list,
-        flops_interrupted_list,
         time_list,
         steps_list,
     ) = experiment_ucb(
