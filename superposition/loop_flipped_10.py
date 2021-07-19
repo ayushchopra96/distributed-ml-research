@@ -1,37 +1,29 @@
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from models_cifar import resnet32
-from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 from time import time
 from fvcore.nn import FlopCountAnalysis
 import random
 from tqdm import trange
-from torch.multiprocessing import Pool
 import os
-import numpy as np
 import torch
-from torch.functional import split
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils import data
-import torch.nn.functional as F
 
 import torchvision.utils
 from torchvision import models
-import torchvision.datasets as dsets
 import torchvision.transforms as transforms
 
-from torch.utils.data import Dataset, DataLoader
-from dataset_wrapper import ClassificationContrastiveDataset, collate_fn
-import matplotlib.pyplot as plt
-from torch.autograd import Variable
-from triplettorch import TripletDataset
+from dataset_wrapper import ClassificationContrastiveDataset, collate_fn_v1, collate_fn_v2_train, collate_fn_v2_test, noniid, ClientNonIID
 from triplettorch import AllTripletMiner, HardNegativeTripletMiner
-from split_nn import SplitNN, Clients, Server
+from split_nn import SplitNN, Clients, Server, PartitionedServer
 from ucb import UCB
+from PartitionedResNets import resnet32 as paritioned_resnet32
+import torch.utils.tensorboard as tb
 
 os.makedirs("./stats/", exist_ok=True)
+os.makedirs("./logs/", exist_ok=True)
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -40,22 +32,36 @@ torch.manual_seed(123)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(device)
 
+CIFAR_NUM_CLASSES = 10
+PARTITIONED_CIFAR_NUM_CLASSES = 3
+TINY_IMGNET_NUM_CLASSES = 200
+PARTITIONED_TINY_IMGNET_NUM_CLASSES = 32
 
-def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
+
+def get_model(num_clients=100, interrupted=False, avg=False, cifar=True, use_partitioned=False, num_partitions=0):
     if cifar:
-        num_classes = 10
+        num_classes = CIFAR_NUM_CLASSES
         option = 'A'
         T_max = 50 if interrupted else 200
     else:
-        num_classes = 200
+        num_classes = TINY_IMGNET_NUM_CLASSES
         option = 'B'
         T_max = 38 if interrupted else 140
 
+    if use_partitioned:
+        assert(num_partitions > 1)
+        model_bob = paritioned_resnet32(
+            num_partitions, num_clients, hooked=False, num_classes=num_classes)
+        server = PartitionedServer(model_bob, num_clients)
+    else:
+        model_bob = resnet32(hooked=False, num_classes=10)
+        server = Server(model_bob, num_clients)
+
     alice_models = []
     for i in range(num_clients):
-        model_a = resnet32(hooked=True)
+        model_a = resnet32(hooked=True, option=option, num_classes=num_classes)
         alice_models.append(model_a)
-    alice_models = Clients(alice_models)
+    clients = Clients(alice_models)
 
     opt_list_alice = []
     scheduler_list_alice = []
@@ -64,22 +70,21 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
             optim.Adam(
-                alice_models.client_models[i].parameters(), lr=2e-3, weight_decay=1e-4)
+                clients.client_models[i].parameters(), lr=2e-3, weight_decay=1e-4)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
             #             ReduceLROnPlateau(opt_list_alice[-1], mode='max', factor=0.7, patience=5)
         )
 
-    model_bob = resnet32(hooked=False)
 #     opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
     opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
 #     scheduler_bob = ReduceLROnPlateau(opt_bob, mode='max', factor=0.7, patience=5)
 
     split_model = SplitNN(
-        alice_models,
-        Server(model_bob, num_clients),
+        clients,
+        server,
         opt_list_alice,
         opt_bob,
         scheduler_list_alice,
@@ -116,6 +121,7 @@ def get_mask(num_clients, use_vanilla, use_ucb, selected_ids, interrupt_range, e
 
 def experiment_ucb(
     experiment_name,
+    summary,
     split_nn,
     train_dataloader,
     test_loader,
@@ -153,7 +159,11 @@ def experiment_ucb(
     wallclock_start = time()
 
     for ep in t:  # 200
-        for x, y, xc, yc in train_dataloader:
+        for x, y, xc, yc, input_mask in train_dataloader:
+            if input_mask is None:
+                input_mask = 1.
+            else:
+                input_mask = input_mask.t().cuda()
             mask = get_mask(num_clients, use_vanilla, use_ucb,
                             selected_ids, interrupt_range, ep)
             # zero grads
@@ -169,24 +179,26 @@ def experiment_ucb(
             triplet_loss, stump_clf_loss, final_clf_loss, flops = split_nn(
                 x, y, xc, yc, mask, flops_split, use_contrastive)
 
-            mask = mask.unsqueeze(-1).expand(y.shape)
-
+            expanded_mask = mask.unsqueeze(-1).expand(y.shape)
             not_selected_loss = (use_contrastive * triplet_loss +
-                                 (1 - use_contrastive) * stump_clf_loss) * mask
-            selected_loss = final_clf_loss * (~mask)
+                                 (1 - use_contrastive) * stump_clf_loss) * expanded_mask * input_mask
+            selected_loss = final_clf_loss * (~expanded_mask) * input_mask
             losses = selected_loss + not_selected_loss
 
             loss_mean, loss_std = losses.mean(
                 -1).detach(), losses.std(-1).detach()
             if not poll_clients:
                 loss_mean, loss_std = loss_mean * \
-                    (~mask[:, 0]), loss_std * (~mask[:, 0])
+                    (~mask), loss_std * (~mask)
 
-            losses.mean().backward()
-            split_nn.backward(mask[:, 0])
+            losses = losses.mean()
+            summary.add_scalar("loss", losses.item(), steps)
+
+            losses.backward()
+            split_nn.backward(mask)
             split_nn.step()
 
-            bandit.update_clients(loss_mean, loss_std, mask[:, 0])
+            bandit.update_clients(loss_mean, loss_std, mask)
 
             selected_ids = bandit.select_clients()
             bandit.end_round()
@@ -194,7 +206,10 @@ def experiment_ucb(
             steps += 1
 
         # do eval and record after epoch
-        acc_split, alice_split = split_nn.evaluator(test_loader)
+        acc_split, acc_alice = split_nn.evaluator(test_loader)
+
+        summary.add_scalar("acc_alice", acc_alice, steps)
+        summary.add_scalar("acc_final", acc_split, steps)
 
         # trigger scheduler bob after a warmup of 10 epochs
         if ep >= 10:
@@ -279,6 +294,8 @@ class hparam:
     use_ucb: bool = True
     use_contrastive: bool = True
     use_vanilla: bool = True
+    use_partitioned: bool = False
+    num_partitions: int = -1
 
 
 if __name__ == "__main__":
@@ -366,14 +383,29 @@ if __name__ == "__main__":
         trainset = dsets.ImageFolder(train_dir, transform=transform)
         testset = dsets.ImageFolder(val_dir, transform=transform_val)
 
+    if hparams_.use_partitioned:
+        num_samples = len(trainset) // (num_clients * 10)
+        num_classes = CIFAR_NUM_CLASSES if cifar else TINY_IMGNET_NUM_CLASSES
+        subset_num_classes = PARTITIONED_CIFAR_NUM_CLASSES if cifar else PARTITIONED_TINY_IMGNET_NUM_CLASSES
+
+        train_dict, test_dict = noniid(
+            num_classes, trainset, testset, num_clients, subset_num_classes, num_samples, 0.0)
+        train_dataset = ClientNonIID(trainset, train_dict, train=True)
+        testset = ClientNonIID(testset, test_dict, train=False)
+        tr_collate_fn = collate_fn_v2_train
+        ts_collate_fn = collate_fn_v2_test
+    else:
+        train_dataset = ClassificationContrastiveDataset(
+            num_clients, trainset, hparams_.use_contrastive, train=True)
+        tr_collate_fn = collate_fn_v1
+        ts_collate_fn = collate_fn_v1
+
     test_loader = torch.utils.data.DataLoader(
-        testset, batch_size=batch_size, shuffle=False, num_workers=os.cpu_count(), pin_memory=not cifar
+        testset, batch_size=batch_size, shuffle=False, num_workers=os.cpu_count(), pin_memory=not cifar, collate_fn=ts_collate_fn
     )
 
-    train_dataset = ClassificationContrastiveDataset(
-        num_clients, trainset, hparams_.use_contrastive, train=True)
     train_dataloader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count(), pin_memory=not cifar, collate_fn=collate_fn
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=os.cpu_count(), pin_memory=not cifar, collate_fn=tr_collate_fn
     )
 
     if interrupted:
@@ -382,7 +414,12 @@ if __name__ == "__main__":
         interrupt_range = [-2, 0]  # Hack for not using Local Parallelism
 
     split_nn = get_model(num_clients=num_clients,
-                         interrupted=hparams_.use_vanilla, cifar=cifar)
+                         interrupted=hparams_.use_vanilla, cifar=cifar, use_partitioned=hparams_.use_partitioned, num_partitions=hparams_.num_partitions)
+
+    id = int(time())
+    os.makedirs(f"./logs/{id}")
+    summary = tb.SummaryWriter(f"./logs/{id}", comment=experiment_name)
+
     (
         acc_split_list,
         flops_split_list,
@@ -390,6 +427,7 @@ if __name__ == "__main__":
         steps_list,
     ) = experiment_ucb(
         experiment_name,
+        summary,
         split_nn,
         train_dataloader,
         test_loader,
@@ -412,7 +450,8 @@ if __name__ == "__main__":
         "Flops": flops_split_list,
         "Time": time_list,
         "Steps": steps_list,
-        "hparams": hparams_.__dict__
+        "hparams": hparams_.__dict__,
+        "expt_id": id
     }
     print(out_dict)
 
@@ -421,7 +460,8 @@ if __name__ == "__main__":
         "Flops": str(flops_split_list),
         "Time": str(time_list),
         "Steps": steps_list,
-        "hparams": hparams_.__dict__
+        "hparams": hparams_.__dict__,
+        "expt_id": id
     }
 
     with open(f"stats/{experiment_name}.json", "w") as f:

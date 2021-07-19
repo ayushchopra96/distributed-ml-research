@@ -2,7 +2,7 @@ from einops import rearrange
 from einops import repeat
 from fvcore.nn import FlopCountAnalysis
 from .client import Clients
-from .server import Server
+from .server import Server, PartitionedServer
 import torch
 from torch import nn
 
@@ -27,6 +27,9 @@ class SplitNN(nn.Module):
         self.num_clients = len(self.clients.client_models)
 
         self.bob = server
+        self.is_partitioned = False
+        if isinstance(self.bob, PartitionedServer):
+            self.is_partitioned = True
         self.opt_bob = server_opt
 
         self.to_server = None
@@ -82,7 +85,7 @@ class SplitNN(nn.Module):
     def infer(self, inputs):
         to_server, stump_out = self.clients(inputs)
         final_out = self.bob(to_server, torch.zeros(
-            (inputs.shape[1], )).bool().cuda())
+            (inputs.shape[0], )).bool().cuda())
         return final_out, stump_out
 
     def get_grad(self):
@@ -123,29 +126,59 @@ class SplitNN(nn.Module):
     @torch.no_grad()
     def evaluator(self, test_loader):
         self.eval()
-        correct_m1, correct_m2 = 0.0, 0.0
-        total = 0.0
+        if not self.is_partitioned:
+            correct_m1, correct_m2 = 0.0, 0.0
+            total = 0.0
+            for images, labels in test_loader:
+                images = repeat(
+                    images.unsqueeze(0), "(clients) b c h w -> (repeat clients) b c h w", repeat=self.num_clients).cuda()
+                labels = labels.cuda()
 
-        for images, labels in test_loader:
-            images = repeat(
-                images.unsqueeze(0), "(clients) b c h w -> (repeat clients) b c h w", repeat=self.num_clients).cuda()
-            labels = labels.cuda()
-
-            output_final, output_stump = self.infer(images)
-            for i in range(self.num_clients):
-                _, predicted_m1 = torch.max(output_final[i].data, 1)
-                r, predicted_m2 = torch.max(output_stump[i].data, 1)
+                output_final, output_stump = self.infer(images)
+                # for i in range(self.num_clients):
+                predicted_m1 = torch.argmax(output_final[0].data, 1)
+                predicted_m2 = torch.argmax(output_stump[0].data, 1)
 
                 correct_m1 += (predicted_m1 == labels).sum()
                 correct_m2 += (predicted_m2 == labels).sum()
 
-                total += labels.size(0) * self.num_clients
+                total += labels.size(0)
 
-        # accuracy of bob with ith alice
-        accuracy_m1 = float(correct_m1) / total
-        accuracy_m2 = float(correct_m2) / total  # accuracy of ith alice
+            # accuracy of bob with ith alice
+            accuracy_m1 = float(correct_m1) / total
+            accuracy_m2 = float(correct_m2) / total  # accuracy of ith alice
 
-        # print('Accuracy Model 1: %f %%' % (100 * accuracy_m1))
-        # print('Accuracy Model 2: %f %%' % (100 * accuracy_m2))
+            # print('Accuracy Model 1: %f %%' % (100 * accuracy_m1))
+            # print('Accuracy Model 2: %f %%' % (100 * accuracy_m2))
 
-        return accuracy_m1, accuracy_m2
+            return accuracy_m1, accuracy_m2
+        else:
+            corrects_m1 = torch.zeros((self.num_clients,)).cuda()
+            corrects_m2 = torch.zeros((self.num_clients,)).cuda()
+            totals = torch.zeros((self.num_clients,)).cuda()
+            for images, labels, mask in test_loader:
+                images = images.cuda().transpose(1, 0)
+                labels = labels.cuda().transpose(1, 0)
+                mask = mask.cuda()
+                output_final, output_stump = self.infer(images)
+                for i in range(self.num_clients):
+                    predicted_m1 = torch.argmax(output_final[i], 1)
+                    predicted_m2 = torch.argmax(output_stump[i], 1)
+
+                    corrects_m1[i] += torch.masked_select(
+                        (predicted_m1 == labels), mask[:, i]).sum()
+                    corrects_m2[i] += torch.masked_select(
+                        (predicted_m2 == labels), mask[:, i]).sum()
+
+                    totals[i] += torch.masked_select(labels,
+                                                     mask[:, i]).size(0)
+
+            # accuracy of bob with ith alice
+            accuracy_m1 = (corrects_m1 / totals).mean()
+            # accuracy of ith alice
+            accuracy_m2 = (corrects_m2 / totals).mean()
+
+            # print('Accuracy Model 1: %f %%' % (100 * accuracy_m1))
+            # print('Accuracy Model 2: %f %%' % (100 * accuracy_m2))
+
+            return accuracy_m1.item(), accuracy_m2.item()
