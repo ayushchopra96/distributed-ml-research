@@ -77,14 +77,8 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True, use_par
             #             ReduceLROnPlateau(opt_list_alice[-1], mode='max', factor=0.7, patience=5)
         )
 
-<<<<<<< HEAD
 #     opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
     opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
-=======
-    model_bob = resnet32(hooked=False)
-    opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-    #opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
->>>>>>> 8c3d00e4d8793aeaf3e6531b5c03b95b8c7f69d8
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
 #     scheduler_bob = ReduceLROnPlateau(opt_bob, mode='max', factor=0.7, patience=5)
 
