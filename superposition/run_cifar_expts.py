@@ -134,5 +134,5 @@ def run_command(args):
     os.system(command.format(id))
 
 
-with mp.Pool(1) as p:
+with mp.Pool(8) as p:
     p.map(run_command, zip(commands, range(len(commands))))
