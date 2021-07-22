@@ -259,8 +259,8 @@ def get_model(num_clients=100, interrupted=False, avg=False, cifar=True):
         )
 
     model_bob = resnet32(hooked=False)
-#     opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-    opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
+    opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
+    # opt_bob = optim.Adam(model_bob.parameters(), lr=5e-3, weight_decay=1e-4)
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
 #     scheduler_bob = ReduceLROnPlateau(opt_bob, mode='max', factor=0.7, patience=5)
 
@@ -329,17 +329,17 @@ def experiment_ucb(
     t = trange(epochs, desc="", leave=True)
     device_1, device_2 = device, device
     split_nn = nn.DataParallel(split_nn, output_device=device_1)
-    split_nn.module.cuda()
+    # split_nn.module.cuda()
 
     interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device_2)
-    interrupted_nn.module.cuda()
+    # interrupted_nn.module.cuda()
 
     selected_ids = random.sample(list(range(num_clients)), k)
     for ep in t:  # 200
         batch_iter = trange(len(train_loader_list[0]))
         for b in batch_iter:
             batch_iter.set_description(
-                f"selected_ids: {selected_ids}", refresh=True
+                f"selected_ids: {selected_ids}", refresh=False
             )
             for i in range(num_clients):  # 100
                 x, y = train_loader_list[i][b]
@@ -368,7 +368,7 @@ def experiment_ucb(
                     )
                     if use_contrastive:
                         loss2, _ = miner(
-                            y, intermediate_output.reshape(x.shape[0], -1))
+                            y, x_next.reshape(x.shape[0], -1))
                     else:
                         loss2 = criterion(intermediate_output, y)
                     losses = loss2.clone().detach().cpu()
