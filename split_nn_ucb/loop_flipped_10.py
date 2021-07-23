@@ -32,6 +32,8 @@ from triplettorch import TripletDataset
 from triplettorch import AllTripletMiner, HardNegativeTripletMiner
 from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
+from MaskedResNets import resnet32 as masked_resnet32
+from MaskedResNets import MaskedResNet
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -126,7 +128,7 @@ class SplitNN(nn.Module):
 
         self.bob = nn.ModuleList([Server(server_model=server)])
         self.opt_bob = server_opt
-        self.is_partitioned = isinstance(server, PartitionedResNet)
+        self.is_partitioned_or_masked = isinstance(server, PartitionedResNet) or isinstance(server, MaskedResNet)
         self.to_server = None
         self.interrupted = interrupted
         self.scheduler_list_alice = scheduler_list_alice
@@ -141,7 +143,7 @@ class SplitNN(nn.Module):
         #     .total()
         # )
         if not self.interrupted or out:
-            if self.is_partitioned:
+            if self.is_partitioned_or_masked:
                 output_final = self.bob[0](to_server, i)
                 # flops += (
                 #     FlopCountAnalysis(self.bob[0], inputs=(to_server, i))
@@ -243,7 +245,8 @@ class SplitNN(nn.Module):
         return accuracy_m1, accuracy_m2
 
 
-def get_model(num_clients=100, num_partitions=1, interrupted=False, avg=False, cifar=True):
+def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=False, avg=False, cifar=True):
+    assert(not (num_partitions > 1 and use_masked))
     if cifar:
         num_classes = 10
         option = 'A'
@@ -274,6 +277,9 @@ def get_model(num_clients=100, num_partitions=1, interrupted=False, avg=False, c
     if num_partitions > 1:
         print("Using Partitioned")
         model_bob = partitioned_resnet32(num_partitions=num_partitions, num_clients=num_clients, hooked=False, num_classes=num_classes)
+    elif use_masked:
+        print("Using Masked")
+        model_bob = masked_resnet32(num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
     else:
         model_bob = resnet32(hooked=False, num_classes=num_classes)
     # opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
@@ -323,6 +329,7 @@ def experiment_ucb(
     discount_hparam,
     dataset_sizes,
     poll_clients,
+    l1_norm_weight,
     steps=None,
     num_clients=100,
 ):
@@ -405,7 +412,11 @@ def experiment_ucb(
                     losses = loss3.clone().detach().cpu()
                     loss_mean, loss_std = torch.mean(
                         losses).item(), torch.std(losses).item()
-                    loss3.mean().backward()
+                    total_loss = loss3.mean() 
+                    if isinstance(interrupted_nn.module.bob[0].server_model, MaskedResNet):
+                        sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint()
+                        total_loss = total_loss + l1_norm_weight * sparsity
+                    total_loss.backward()
                     interrupted_nn.module.backward(i, out=True)
                     interrupted_nn.module.step(i, out=True)
 
@@ -471,7 +482,7 @@ def experiment_ucb(
         flops_interrupted_list.append(flops_interrupted)
 
         t.set_description(
-            f"Split: {0.}, Interrupted: {acc_interrupted}, Steps: {steps}", refresh=True
+            f"Split: {0.}, Interrupted: {accs_final}, Steps: {steps}", refresh=True
         )
 
         # if ep % 50 == 0 and ep > 0:
@@ -545,7 +556,10 @@ class hparam:
     use_ucb: bool = True
     use_contrastive: bool = True
     num_partitions: int = 1
+    use_masked: bool = False
+    l1_norm_weight: float = 5e-7
     classwise_subset: bool = False
+    num_groups: int = 5
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -638,7 +652,7 @@ if __name__ == "__main__":
         train_idx, test_idx, train_sizes = classwise_subset(
             total, 
             hparams_.num_clients, 
-            2, 10 if hparams_.cifar else 200,
+            hparams_.num_groups, 10 if hparams_.cifar else 200,
             0.1
         )
         cifar_test_loader_list = []
@@ -726,7 +740,7 @@ if __name__ == "__main__":
     # split_nn = get_model(num_clients=num_clients,
     #                      interrupted=False, cifar=cifar)
     interrupted_nn = get_model(
-        num_clients=num_clients, num_partitions=hparams_.num_partitions, interrupted=interrupted, cifar=cifar)
+        num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar)
     print("Average Train set size per client: ", train_sizes.mean().item())
     (
         acc_split_list,
@@ -749,6 +763,7 @@ if __name__ == "__main__":
         discount_hparam=hparams_.discount,
         dataset_sizes=train_sizes,
         interrupt_range=interrupt_range,
+        l1_norm_weight=hparams_.l1_norm_weight,
         epochs=epochs,
         num_clients=num_clients,
     )

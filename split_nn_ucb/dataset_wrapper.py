@@ -2,6 +2,7 @@ import torch
 import random
 import math
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 class DataWrapper:
     def __init__(self, dataset, batch_size, *args, **kwargs):
@@ -103,8 +104,6 @@ def split_dataset_disjoint_labels(num_clients, dataset, num_classes, num_groups=
                 client_id_to_idx[c].extend(list(labels_to_chunks[l][chunk_counter[l]])) 
                 chunk_counter[l] += 1
     return client_id_to_idx
-
-from sklearn.model_selection import train_test_split
 
 def classwise_subset(total_dataset, num_clients, num_groups, num_classes, test_split=0.1):
     client_id_to_idx = split_dataset_disjoint_labels(num_clients, total_dataset, num_classes, num_groups)
