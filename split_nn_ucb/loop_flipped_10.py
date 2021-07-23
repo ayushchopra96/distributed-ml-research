@@ -1,7 +1,9 @@
 from argparse import ArgumentParser
 from dataclasses import dataclass
+
+from fvcore.nn.flop_count import flop_count
 from models_cifar import resnet32, test
-from ucb import UCB
+from ucb import UCB, UniformRandom
 from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 import h5py
@@ -34,6 +36,7 @@ from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet32 as masked_resnet32
 from MaskedResNets import MaskedResNet
+from functools import lru_cache
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -105,6 +108,31 @@ class Server(nn.Module):
     def eval(self):
         self.server_model.eval()
 
+flops_dict = {}
+# @torch.no_grad()
+def compute_flops(model, args, alice_or_bob):
+    if len(args) == 2:
+        inputs, i = args
+    else:
+        inputs, = args
+
+    memo_key = (alice_or_bob, str(list(inputs.shape)))
+    if memo_key in flops_dict:
+        return flops_dict[memo_key]
+
+    f = FlopCountAnalysis(model, inputs=args).unsupported_ops_warnings(False).uncalled_modules_warnings(False).total()
+    flops_dict[memo_key] = f
+    return f
+
+comm_dict = {}
+def compute_comm_cost(tensor):
+    memo_key = str(list(tensor.shape))
+    if memo_key in comm_dict:
+        return comm_dict[memo_key]
+
+    s = np.prod(tensor.size()) * 4 * 1e-6
+    comm_dict[memo_key] = s
+    return s
 
 class SplitNN(nn.Module):
     def __init__(
@@ -137,27 +165,15 @@ class SplitNN(nn.Module):
 
     def forward(self, inputs, i, out, flops):
         to_server, output = self.clients[f"alice{i}"](inputs)
-        # flops += (
-        #     FlopCountAnalysis(self.clients[f"alice{i}"], inputs=inputs)
-        #     .unsupported_ops_warnings(False).uncalled_modules_warnings(False)
-        #     .total()
-        # )
+        flops += compute_flops(self.clients[f"alice{i}"], (inputs,), "alice")
         if not self.interrupted or out:
             if self.is_partitioned_or_masked:
                 output_final = self.bob[0](to_server, i)
-                # flops += (
-                #     FlopCountAnalysis(self.bob[0], inputs=(to_server, i))
-                #     .unsupported_ops_warnings(False).uncalled_modules_warnings(False)
-                #     .total()
-                # )
+                flops += compute_flops(self.bob[0], (to_server, i), "bob")
                 return output, output_final, flops
             else:
                 output_final = self.bob[0](to_server)
-                # flops += (
-                #     FlopCountAnalysis(self.bob[0], inputs=to_server)
-                #     .unsupported_ops_warnings(False).uncalled_modules_warnings(False)
-                #     .total()
-                # )
+                flops += compute_flops(self.bob[0], (to_server,), "bob")
                 return output, output_final, flops
         else:
             return output, to_server, flops
@@ -174,9 +190,10 @@ class SplitNN(nn.Module):
         elif out or not self.interrupted:
             grad_to_client = self.bob[0].server_backward()
             self.clients[f"alice{i}"].client_backward(grad_to_client)
+            return grad_to_client
         else:
             self.clients[f"alice{i}"].client_backward()
-
+            
     def copy_params(self, last_trained: int) -> None:
         next = (last_trained + 1) % len(self.clients)
         last_trained = self.clients[f"alice{last_trained}"]
@@ -325,6 +342,7 @@ def experiment_ucb(
     epochs,
     k,
     use_ucb,
+    use_random,
     use_contrastive,
     discount_hparam,
     dataset_sizes,
@@ -335,18 +353,24 @@ def experiment_ucb(
 ):
     miner = HardNegativeTripletMiner(0.5).cuda()  # AllTripletMiner(0.5).cuda()
 
-    flops_split, flops_interrupted, steps = 0, 0, 0
+    flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0
     (
         flops_split_list,
         flops_interrupted_list,
         acc_split_list,
         acc_interrupted_list,
+        comm_split_list,
+        comm_interrupted_list,
         steps_list,
         time_list,
-    ) = ([], [], [], [], [], [])
+    ) = ([], [], [], [], [], [], [], [])
+
     wallclock_start = time()
 
-    bandit = UCB(num_clients, discount_hparam, dataset_sizes, k)
+    if use_random:
+        bandit = UniformRandom(num_clients, discount_hparam, dataset_sizes, k)
+    else:
+        bandit = UCB(num_clients, discount_hparam, dataset_sizes, k)
 
     criterion = nn.CrossEntropyLoss(reduction='none')
     flag = True
@@ -363,7 +387,7 @@ def experiment_ucb(
         batch_iter = trange(len(train_loader_list[0]))
         for b in batch_iter:
             batch_iter.set_description(
-                f"selected_ids: {selected_ids}", refresh=False
+                f"selected_ids: {selected_ids}", refresh=True
             )
             for i in range(num_clients):  # 100
                 x, y = train_loader_list[i][b]
@@ -383,7 +407,7 @@ def experiment_ucb(
                 # split_nn.module.step(i, out=True)
 
                 # interrupt activation flow
-                if to_interrupt_or_not(use_ucb, selected_ids, i, interrupt_range, ep):
+                if to_interrupt_or_not(use_ucb or use_random, selected_ids, i, interrupt_range, ep):
                     if use_contrastive:
                         x, y = contrastive_list[i][b]
                     x, y = x.to(device_2), y.to(device_2)
@@ -399,12 +423,14 @@ def experiment_ucb(
                     if poll_clients:
                         loss_mean, loss_std = torch.mean(
                             losses).item(), torch.std(losses).item()
+                        comm_interrupted += 2 * 4 * 1e-6
                     else:
                         loss_mean, loss_std = None, None
                     loss2.mean().backward()
                     interrupted_nn.module.step(i, out=False)
                 else:
                     x, y = x.to(device_2), y.to(device_2)
+                    comm_interrupted += compute_comm_cost(x)
                     _, output_final, flops_interrupted = interrupted_nn.module(
                         x, i, True, flops_interrupted
                     )
@@ -417,8 +443,10 @@ def experiment_ucb(
                         sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint()
                         total_loss = total_loss + l1_norm_weight * sparsity
                     total_loss.backward()
-                    interrupted_nn.module.backward(i, out=True)
+                    grad = interrupted_nn.module.backward(i, out=True)
                     interrupted_nn.module.step(i, out=True)
+
+                    comm_interrupted += compute_comm_cost(grad)
 
                 steps += 1
 
@@ -480,7 +508,9 @@ def experiment_ucb(
         time_list.append(time() - wallclock_start)
         flops_split_list.append(flops_split)
         flops_interrupted_list.append(flops_interrupted)
-
+        comm_split_list.append(comm_split)
+        comm_interrupted_list.append(comm_interrupted)
+        
         t.set_description(
             f"Split: {0.}, Interrupted: {accs_final}, Steps: {steps}", refresh=True
         )
@@ -500,6 +530,8 @@ def experiment_ucb(
         flops_interrupted_list,
         time_list,
         steps_list,
+        comm_split_list,
+        comm_interrupted_list,
     )
 
 
@@ -547,19 +579,21 @@ class RandomGammaCorrection(object):
 class hparam:
     cifar: bool = True
     num_clients: int = 10
-    k: int = 2
+    k: int = 6
     discount: float = 0.7
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
     epochs: int = 150
     use_ucb: bool = True
+    use_random: bool = True
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
     l1_norm_weight: float = 5e-7
     classwise_subset: bool = False
     num_groups: int = 5
+    experiment_name: str = ""
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -574,7 +608,10 @@ if __name__ == "__main__":
     for k, v in hparams_.__dict__.items():
         temp.append(f"{k}_{v}")
 
-    experiment_name = "-".join(temp)
+    if hparams_.experiment_name == "":
+        experiment_name = "-".join(temp)
+    else:
+        experiment_name = hparams_.experiment_name + str(hparams_.num_clients)
     print(experiment_name)
 
     cifar = hparams_.cifar
@@ -749,6 +786,8 @@ if __name__ == "__main__":
         flops_interrupted_list,
         time_list,
         steps_list,
+        comm_split_list,
+        comm_interrupted_list,
     ) = experiment_ucb(
         experiment_name,
         None,
@@ -759,6 +798,7 @@ if __name__ == "__main__":
         k=hparams_.k,
         use_contrastive=hparams_.use_contrastive,
         use_ucb=hparams_.use_ucb,
+        use_random=hparams_.use_random,
         poll_clients=poll_clients,
         discount_hparam=hparams_.discount,
         dataset_sizes=train_sizes,
@@ -771,25 +811,14 @@ if __name__ == "__main__":
     import json
 
     out_dict = {
-        "SplitNN Accuracy": acc_split_list,
-        "Interrupted Accuracy": acc_interrupted_list,
-        "Flops SplitNN": flops_split_list,
-        "Flops Interrupted": flops_interrupted_list,
-        "Time": time_list,
-        "Steps": steps_list,
+        "Method Accuracy": str(acc_interrupted_list),
+        "Method Flops": str(flops_interrupted_list),
+        "Method Comm Cost": str(comm_interrupted_list),
+        "Time": str(time_list),
+        "Steps": str(steps_list),
         "hparams": hparams_.__dict__
     }
     print(out_dict)
-
-    out_dict = {
-        "SplitNN Accuracy": str(acc_split_list),
-        "Interrupted Accuracy": str(acc_interrupted_list),
-        "Flops SplitNN": str(flops_split_list),
-        "Flops Interrupted": str(flops_interrupted_list),
-        "Time": str(time_list),
-        "Steps": steps_list,
-        "hparams": hparams_.__dict__
-    }
 
     with open(f"stats/{experiment_name}.json", "w") as f:
         json.dump(out_dict, f)

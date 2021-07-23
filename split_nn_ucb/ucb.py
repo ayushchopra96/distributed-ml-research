@@ -2,6 +2,20 @@ import torch
 from einops import repeat
 import random
 
+class UniformRandom:
+    def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
+        pass
+        self.num_clients = num_clients
+        self.k = k
+    def select_clients(self):
+        return random.sample(list(range(self.num_clients)), self.k)
+
+    def end_round(self):
+        pass
+
+    def update_client(self, *args, **kwargs):
+        pass
+
 class UCB:
     def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
         self.losses_mean, self.losses_std, self.selection_mask = [], [], []
@@ -178,6 +192,12 @@ if __name__ == "__main__":
     print(select_clients(A, 3))
 
     b = UCB(
+        num_clients,
+        0.7,
+        dataset_sizes,
+        3
+    )
+    b = UniformRandom(
         num_clients,
         0.7,
         dataset_sizes,
