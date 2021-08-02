@@ -2,6 +2,7 @@ import torch
 from einops import repeat
 import random
 
+
 class UCB:
     def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
         self.losses_mean, self.losses_std, self.selection_mask = [], [], []
@@ -10,20 +11,22 @@ class UCB:
         self.num_clients = num_clients
         self.k = k
         self.round_counter = -1
-        self.max_history = 2048 # store data for only last this number of steps
+        self.max_history = 2048  # store data for only last this number of steps
         self.end_round()
 
     def update_client(self, client_id, loss_mean, loss_std, was_selected):
-        if loss_mean is None and loss_std is None:
+        if not was_selected or (loss_mean is None and loss_std is None):
             # loss_mean and loss_std are None if the client wasn't selected
             if self.round_counter == 0:
                 # If it is the initial round
                 loss_mean = 0.
-                loss_std = 100. # Assume large std
+                loss_std = 100.  # Assume large std
             else:
                 # Assume loss statistics are discounted previous round's statistics
-                loss_mean = self.losses_mean[self.round_counter-1][client_id] * self.discount
-                loss_std = self.losses_mean[self.round_counter-1][client_id] * self.discount
+                loss_mean = self.losses_mean[self.round_counter -
+                                             1][client_id] * self.discount
+                loss_std = self.losses_mean[self.round_counter -
+                                            1][client_id] * self.discount
 
         self.losses_mean[self.round_counter][client_id] = loss_mean
         self.losses_std[self.round_counter][client_id] = loss_std
@@ -145,18 +148,20 @@ def select_clients(A, k):
     return topk(
         list(A.numpy()),
         k
-        )
+    )
+
 
 def topk(arr: list, k: int) -> list:
     # Non-deterministic top k
     # Uses some hacks to break ties randomly
-    
+
     dummy = list(range(len(arr)))
     random.shuffle(dummy)
     idx = range(len(arr))
     tuples = list(zip(arr, dummy, idx))
     tuples.sort(reverse=True)
     return [item[-1] for item in tuples[:k]]
+
 
 if __name__ == "__main__":
     num_rounds = 150
@@ -189,7 +194,7 @@ if __name__ == "__main__":
             l = torch.randn((dataset_sizes[0],))
             # l = torch.zeros((dataset_sizes[0],))
             # print(c in selected_ids)
-            b.update_client(c, l, c in selected_ids)
+            b.update_client(c, l.mean(), l.std(), c in selected_ids)
         selected_ids = b.select_clients()
         b.end_round()
         print(selected_ids)
