@@ -2,6 +2,7 @@ import torch
 import random
 import math
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 class DataWrapper:
     def __init__(self, dataset, batch_size, *args, **kwargs):
@@ -64,3 +65,55 @@ if __name__ == "__main__":
         assert(c == wrapped.total_len() == ds_size)
         wrapped.shuffle()
         assert(c == wrapped.total_len() == ds_size)
+
+def split_dataset_disjoint_labels(num_clients, dataset, num_classes, num_groups=2):
+    assert(num_clients % num_groups == 0)
+    assert(num_classes % num_groups == 0)
+    
+    labels = [y for x, y in dataset]
+    labels_to_idx = {}
+    for i, l in enumerate(labels):
+        if l not in labels_to_idx:
+            labels_to_idx[l] = []
+        labels_to_idx[l].append(i)
+    labels_to_chunks = {}
+    chunk_counter = {}
+    for k, v in labels_to_idx.items():
+        labels_to_chunks[k] = np.split(np.array(v), num_clients // num_groups)
+        chunk_counter[k] = 0
+    
+    group_ids = []
+    for gid in range(num_groups):
+        group_ids += [gid] * (num_clients // num_groups)
+    random.shuffle(group_ids)
+
+    unique_labels = list(range(num_classes))
+    group_id_to_labels = {}
+    random.shuffle(unique_labels)
+    for i, l in enumerate(unique_labels):
+        if i % num_groups not in group_id_to_labels:
+            group_id_to_labels[i % num_groups] = []
+        group_id_to_labels[i % num_groups].append(l)
+
+    client_id_to_idx = {}
+    for c in range(num_clients):
+        for l in unique_labels:
+            if l in group_id_to_labels[group_ids[c]]:
+                if client_id_to_idx.get(c, False) == False:
+                    client_id_to_idx[c] = [] 
+                client_id_to_idx[c].extend(list(labels_to_chunks[l][chunk_counter[l]])) 
+                chunk_counter[l] += 1
+    return client_id_to_idx
+
+def classwise_subset(total_dataset, num_clients, num_groups, num_classes, test_split=0.1):
+    client_id_to_idx = split_dataset_disjoint_labels(num_clients, total_dataset, num_classes, num_groups)
+    train, test = {}, {}
+    train_sizes = torch.zeros((num_clients,))
+
+    for c, indices in client_id_to_idx.items():
+        train_idx, test_idx = train_test_split(indices, test_size=test_split)
+        train[c] = train_idx
+        test[c] = test_idx 
+
+        train_sizes[c] = len(train_idx)
+    return train, test, train_sizes

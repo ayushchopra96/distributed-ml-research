@@ -16,7 +16,7 @@ from torch.nn.common_types import _size_1_t, _size_2_t, _size_3_t
 from typing import Optional, List, Tuple, Union
 
 
-class ParitionedLinear(Module):
+class PartitionedLinear(Module):
     r"""
     Partitioned Linear
     """
@@ -28,7 +28,7 @@ class ParitionedLinear(Module):
     def __init__(self, in_features: int, out_features: int, num_partitions: int, bias: bool = True,
                  device=None, dtype=None) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
-        super(ParitionedLinear, self).__init__()
+        super(PartitionedLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.num_partitions = num_partitions
