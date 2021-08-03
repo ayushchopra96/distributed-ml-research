@@ -66,9 +66,8 @@ if __name__ == "__main__":
         wrapped.shuffle()
         assert(c == wrapped.total_len() == ds_size)
 
-def split_dataset_disjoint_labels(num_clients, dataset, num_classes, num_groups=2):
+def split_dataset_disjoint_labels(num_clients, dataset, num_groups=2):
     assert(num_clients % num_groups == 0)
-    assert(num_classes % num_groups == 0)
     
     labels = [y for x, y in dataset]
     labels_to_idx = {}
@@ -76,12 +75,16 @@ def split_dataset_disjoint_labels(num_clients, dataset, num_classes, num_groups=
         if l not in labels_to_idx:
             labels_to_idx[l] = []
         labels_to_idx[l].append(i)
+
+    num_classes = len(set(labels))
+    assert(num_classes % num_groups == 0)
+
     labels_to_chunks = {}
     chunk_counter = {}
     for k, v in labels_to_idx.items():
         labels_to_chunks[k] = np.split(np.array(v), num_clients // num_groups)
         chunk_counter[k] = 0
-    
+
     group_ids = []
     for gid in range(num_groups):
         group_ids += [gid] * (num_clients // num_groups)
@@ -105,8 +108,8 @@ def split_dataset_disjoint_labels(num_clients, dataset, num_classes, num_groups=
                 chunk_counter[l] += 1
     return client_id_to_idx
 
-def classwise_subset(total_dataset, num_clients, num_groups, num_classes, test_split=0.1):
-    client_id_to_idx = split_dataset_disjoint_labels(num_clients, total_dataset, num_classes, num_groups)
+def classwise_subset(total_dataset, num_clients, num_groups, test_split=0.1):
+    client_id_to_idx = split_dataset_disjoint_labels(num_clients, total_dataset, num_groups)
     train, test = {}, {}
     train_sizes = torch.zeros((num_clients,))
 

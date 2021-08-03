@@ -116,7 +116,7 @@ class ResNet(nn.Module):
         loss = 0.
         for pname, p in self.named_parameters():
             if pname.find("masks") != -1:
-                loss = loss + torch.norm(p, p=1)
+                loss = loss + torch.norm(p.sigmoid(), p=1)
         return loss
 
     def _make_layer(self, block, planes, num_blocks, num_masks, stride, option):
