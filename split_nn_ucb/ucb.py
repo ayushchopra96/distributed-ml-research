@@ -1,12 +1,15 @@
 import torch
 from einops import repeat
 import random
+import numpy as np
+from numba import njit
 
 class UniformRandom:
     def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
         pass
         self.num_clients = num_clients
         self.k = k
+
     def select_clients(self):
         return random.sample(list(range(self.num_clients)), self.k)
 
@@ -16,6 +19,92 @@ class UniformRandom:
     def update_client(self, *args, **kwargs):
         pass
 
+class BayesianUCB:
+    def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
+        self.losses_mean, self.losses_std, self.selection_mask = None, None, None
+        self.discount = discount_hparam
+        self.dataset_ratio = dataset_fractions(dataset_sizes)
+        self.num_clients = num_clients
+        self.k = k
+        self.max_history = 2048  # store data for only last this number of steps
+        self.end_round()
+        
+    def update_client(self, client_id, loss_mean, loss_std, was_selected):
+        round_counter = len(self.losses_mean) - 1
+        if was_selected:
+            self.losses_mean[round_counter][client_id] = loss_mean
+            self.losses_std[round_counter][client_id] = loss_std
+        # print(self.losses_mean[self.round_counter][client_id], self.losses_std[self.round_counter][client_id])
+        self.selection_mask[round_counter][client_id] = 1. if was_selected else 0.
+    
+
+    def end_round(self):
+        zeros = np.zeros((1, self.num_clients))
+        if self.losses_std is not None:
+            self.losses_mean = np.append(self.losses_mean, zeros.copy(), axis=0)
+            self.losses_std = np.append(self.losses_std, zeros.copy(), axis=0)
+            self.selection_mask = np.append(self.selection_mask, zeros.copy(), axis=0)
+        else:
+            self.losses_mean = zeros.copy()
+            self.losses_std =  zeros.copy()
+            self.selection_mask = zeros.copy()
+
+        round_counter = len(self.losses_mean)
+
+        if round_counter == 1:
+            self.losses_mean[0] = 100.
+            self.losses_std[0] = 100.
+        elif round_counter == 2:
+            self.losses_mean[1, :] = (100. + self.losses_mean[0, :]) / 2 
+            self.losses_std[1, :] = (100. + self.losses_std[0, :]) / 2
+        else:
+            self.losses_mean[-1, :] = (self.losses_mean[-3, :] + self.losses_mean[-2, :]) / 2
+            self.losses_std[-1, :] = (self.losses_std[-3, :] + self.losses_std[-2, :]) / 2
+        # print(self.losses_mean, len(self.losses_mean))
+        # assert(all(self.losses_mean[-1]))
+        # assert(all(self.losses_std[-1]))
+
+
+        if round_counter >= self.max_history:
+            self.losses_mean = np.delete(self.losses_mean, 0, 0)
+            self.losses_std = np.delete(self.losses_std, 0, 0)
+            self.selection_mask = np.delete(self.selection_mask, 0, 0)
+    
+    def select_clients(self):
+        scores = BayesianAdvantage(
+            self.discount, 
+            self.num_clients, 
+            self.losses_mean, 
+            self.losses_std, 
+            self.selection_mask
+        )
+        # print(scores)
+        return topk(list(scores), self.k)
+
+@njit()
+def BayesianAdvantage(
+    discount, 
+    num_clients, 
+    losses_mean, 
+    losses_std, 
+    client_selection_mask
+    ):
+    round_counter = losses_mean.shape[0]
+    mean = np.zeros(num_clients)
+    std = np.zeros(num_clients)
+    counts = np.zeros(num_clients) + 1e-15
+    for t in range(round_counter):
+        for c in range(num_clients):
+            mean[c] += discount ** (round_counter - 1 - t) * losses_mean[t][c]
+            std[c] += discount ** (round_counter - 1 - t) * losses_std[t][c]
+            counts[c] += discount ** (t) * (1 - client_selection_mask[t][c])
+    # print("mask", client_selection_mask.sum(0))
+    # print("losses", losses_mean.sum(0))
+    # print("std", losses_std.sum(0))
+    # print(mean, counts, std)
+    scores = mean / counts + 2 * std / np.sqrt(counts)
+    return scores
+
 class UCB:
     def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
         self.losses_mean, self.losses_std, self.selection_mask = [], [], []
@@ -24,20 +113,22 @@ class UCB:
         self.num_clients = num_clients
         self.k = k
         self.round_counter = -1
-        self.max_history = 2048 # store data for only last this number of steps
+        self.max_history = 2048  # store data for only last this number of steps
         self.end_round()
 
     def update_client(self, client_id, loss_mean, loss_std, was_selected):
-        if loss_mean is None and loss_std is None:
+        if not was_selected or (loss_mean is None and loss_std is None):
             # loss_mean and loss_std are None if the client wasn't selected
             if self.round_counter == 0:
                 # If it is the initial round
                 loss_mean = 0.
-                loss_std = 100. # Assume large std
+                loss_std = 100.  # Assume large std
             else:
                 # Assume loss statistics are discounted previous round's statistics
-                loss_mean = self.losses_mean[self.round_counter-1][client_id] * self.discount
-                loss_std = self.losses_mean[self.round_counter-1][client_id] * self.discount
+                loss_mean = self.losses_mean[self.round_counter -
+                                             1][client_id] * self.discount
+                loss_std = self.losses_std[self.round_counter -
+                                            1][client_id] * self.discount
 
         self.losses_mean[self.round_counter][client_id] = loss_mean
         self.losses_std[self.round_counter][client_id] = loss_std
@@ -159,18 +250,20 @@ def select_clients(A, k):
     return topk(
         list(A.numpy()),
         k
-        )
+    )
+
 
 def topk(arr: list, k: int) -> list:
     # Non-deterministic top k
     # Uses some hacks to break ties randomly
-    
+
     dummy = list(range(len(arr)))
     random.shuffle(dummy)
     idx = range(len(arr))
     tuples = list(zip(arr, dummy, idx))
     tuples.sort(reverse=True)
     return [item[-1] for item in tuples[:k]]
+
 
 if __name__ == "__main__":
     num_rounds = 150
@@ -184,7 +277,7 @@ if __name__ == "__main__":
     dataset_sizes = torch.randint(100, 10000, (num_clients,))
 
     p = dataset_fractions(dataset_sizes)
-    A = advantage(losses, mask, 0.7, std, p)
+    A = advantage(losses, mask, 0.97, std, p)
     assert(A.shape == p.shape)
 
     print(A)
@@ -197,19 +290,20 @@ if __name__ == "__main__":
         dataset_sizes,
         3
     )
-    b = UniformRandom(
+    b = BayesianUCB(
         num_clients,
-        0.7,
+        0.85,
         dataset_sizes,
         3
     )
     selected_ids = random.sample(list(range(num_clients)), 3)
     for r in range(num_rounds):
-        for c in range(num_clients):
-            l = torch.randn((dataset_sizes[0],))
-            # l = torch.zeros((dataset_sizes[0],))
-            # print(c in selected_ids)
-            b.update_client(c, l, c in selected_ids)
-        selected_ids = b.select_clients()
+        for _ in range(160):
+            for c in range(num_clients):
+                l = torch.rand((dataset_sizes[0],)).uniform_((c) / (r+1), (c+1) / (r+1))# * (c + 1) * (1 / (r + 1))
+                # l = torch.zeros((dataset_sizes[0],))
+                # print(c in selected_ids)
+                b.update_client(c, l.mean(), l.std(), c in selected_ids)
         b.end_round()
+        selected_ids = b.select_clients()
         print(selected_ids)

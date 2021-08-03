@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from fvcore.nn.flop_count import flop_count
 from models_cifar import resnet32, test
-from ucb import UCB, UniformRandom
+from ucb import UCB, UniformRandom, BayesianUCB
 from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 import h5py
@@ -108,8 +108,11 @@ class Server(nn.Module):
     def eval(self):
         self.server_model.eval()
 
+
 flops_dict = {}
 # @torch.no_grad()
+
+
 def compute_flops(model, args, alice_or_bob):
     if len(args) == 2:
         inputs, i = args
@@ -120,11 +123,15 @@ def compute_flops(model, args, alice_or_bob):
     if memo_key in flops_dict:
         return flops_dict[memo_key]
 
-    f = FlopCountAnalysis(model, inputs=args).unsupported_ops_warnings(False).uncalled_modules_warnings(False).total()
+    f = FlopCountAnalysis(model, inputs=args).unsupported_ops_warnings(
+        False).uncalled_modules_warnings(False).total()
     flops_dict[memo_key] = f
     return f
 
+
 comm_dict = {}
+
+
 def compute_comm_cost(tensor):
     memo_key = str(list(tensor.shape))
     if memo_key in comm_dict:
@@ -133,6 +140,7 @@ def compute_comm_cost(tensor):
     s = np.prod(tensor.size()) * 4 * 1e-6
     comm_dict[memo_key] = s
     return s
+
 
 class SplitNN(nn.Module):
     def __init__(
@@ -156,7 +164,8 @@ class SplitNN(nn.Module):
 
         self.bob = nn.ModuleList([Server(server_model=server)])
         self.opt_bob = server_opt
-        self.is_partitioned_or_masked = isinstance(server, PartitionedResNet) or isinstance(server, MaskedResNet)
+        self.is_partitioned_or_masked = isinstance(
+            server, PartitionedResNet) or isinstance(server, MaskedResNet)
         self.to_server = None
         self.interrupted = interrupted
         self.scheduler_list_alice = scheduler_list_alice
@@ -193,7 +202,7 @@ class SplitNN(nn.Module):
             return grad_to_client
         else:
             self.clients[f"alice{i}"].client_backward()
-            
+
     def copy_params(self, last_trained: int) -> None:
         next = (last_trained + 1) % len(self.clients)
         last_trained = self.clients[f"alice{last_trained}"]
@@ -230,6 +239,7 @@ class SplitNN(nn.Module):
         if out and step_bob:
             self.scheduler_bob.step()
 
+    @torch.no_grad()
     def evaluator(self, test_loader, i):
         self.eval(i)
         correct_m1, correct_m2 = 0.0, 0.0
@@ -293,10 +303,12 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
         )
     if num_partitions > 1:
         print("Using Partitioned")
-        model_bob = partitioned_resnet32(num_partitions=num_partitions, num_clients=num_clients, hooked=False, num_classes=num_classes)
+        model_bob = partitioned_resnet32(
+            num_partitions=num_partitions, num_clients=num_clients, hooked=False, num_classes=num_classes)
     elif use_masked:
         print("Using Masked")
-        model_bob = masked_resnet32(num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
+        model_bob = masked_resnet32(
+            num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
     else:
         model_bob = resnet32(hooked=False, num_classes=num_classes)
     # opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
@@ -316,6 +328,25 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
     )
 
     return split_model
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
 
 
 def to_interrupt_or_not(use_ucb, selected_ids, id, interrupt_range, ep):
@@ -367,10 +398,14 @@ def experiment_ucb(
 
     wallclock_start = time()
 
+    final_ce_meter = AverageMeter()
+    intermediate_ce_meter = AverageMeter()
+    cl_meter = AverageMeter()
+
     if use_random:
         bandit = UniformRandom(num_clients, discount_hparam, dataset_sizes, k)
     else:
-        bandit = UCB(num_clients, discount_hparam, dataset_sizes, k)
+        bandit = BayesianUCB(num_clients, discount_hparam, dataset_sizes, k)
 
     criterion = nn.CrossEntropyLoss(reduction='none')
     flag = True
@@ -386,9 +421,6 @@ def experiment_ucb(
     for ep in t:  # 200
         batch_iter = trange(len(train_loader_list[0]))
         for b in batch_iter:
-            batch_iter.set_description(
-                f"selected_ids: {selected_ids}", refresh=True
-            )
             for i in range(num_clients):  # 100
                 x, y = train_loader_list[i][b]
                 # zero grads
@@ -417,8 +449,10 @@ def experiment_ucb(
                     if use_contrastive:
                         loss2, _ = miner(
                             y, x_next.reshape(x.shape[0], -1))
+                        cl_meter.update(loss2.mean().item())
                     else:
                         loss2 = criterion(intermediate_output, y)
+                        intermediate_ce_meter.update(loss2.mean().item())
                     losses = loss2.clone().detach().cpu()
                     if poll_clients:
                         loss_mean, loss_std = torch.mean(
@@ -438,9 +472,11 @@ def experiment_ucb(
                     losses = loss3.clone().detach().cpu()
                     loss_mean, loss_std = torch.mean(
                         losses).item(), torch.std(losses).item()
-                    total_loss = loss3.mean() 
+                    total_loss = loss3.mean()
+                    final_ce_meter.update(total_loss.item())
                     if isinstance(interrupted_nn.module.bob[0].server_model, MaskedResNet):
-                        sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint()
+                        sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint(
+                        )
                         total_loss = total_loss + l1_norm_weight * sparsity
                     total_loss.backward()
                     grad = interrupted_nn.module.backward(i, out=True)
@@ -456,8 +492,21 @@ def experiment_ucb(
                 # split_nn.module.copy_params(i)
                 interrupted_nn.module.copy_params(i)
 
-            selected_ids = bandit.select_clients()
             bandit.end_round()
+            selected_ids = bandit.select_clients()
+
+            if use_contrastive:
+                batch_iter.set_description(
+                    f"Final CE: {final_ce_meter.avg:.2f}, CL: {cl_meter.avg:.2f}", refresh=True
+                )
+            else:
+                batch_iter.set_description(
+                    f"Final CE: {final_ce_meter.avg:.2f}, Intermediate CE: {intermediate_ce_meter.avg:.2f}", refresh=True
+                )
+
+        final_ce_meter.reset()
+        cl_meter.reset()
+        intermediate_ce_meter.reset()
 
         for i in range(num_clients):
             train_loader_list[i].shuffle()
@@ -510,9 +559,9 @@ def experiment_ucb(
         flops_interrupted_list.append(flops_interrupted)
         comm_split_list.append(comm_split)
         comm_interrupted_list.append(comm_interrupted)
-        
+
         t.set_description(
-            f"Split: {0.}, Interrupted: {accs_final}, Steps: {steps}", refresh=True
+            f"Method: {accs_final}, Steps: {steps}", refresh=True
         )
 
         # if ep % 50 == 0 and ep > 0:
@@ -579,12 +628,12 @@ class RandomGammaCorrection(object):
 class hparam:
     cifar: bool = True
     num_clients: int = 10
-    k: int = 6
-    discount: float = 0.7
+    k: int = 3
+    discount: float = 0.8
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
-    epochs: int = 150
+    epochs: int = 100
     use_ucb: bool = True
     use_random: bool = True
     use_contrastive: bool = True
@@ -594,6 +643,7 @@ class hparam:
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
+
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -659,7 +709,7 @@ if __name__ == "__main__":
                                                   [-0.5836, -0.6948,  0.4203],
                                                   ])
                           }
-        
+
         transform = transforms.Compose(
             [
                 transforms.RandomResizedCrop(56),
@@ -685,22 +735,28 @@ if __name__ == "__main__":
         testset = dsets.ImageFolder(val_dir, transform=transform_val)
 
     if hparams_.classwise_subset:
+        # trainset = torchvision.datasets.CIFAR100(
+        #     root="./data", train=True, download=True, transform=transform
+        # )
+        # testset = torchvision.datasets.CIFAR100(
+        #     root="./data", train=False, download=True, transform=transform_val
+        # )
         total = torch.utils.data.ConcatDataset([trainset, testset])
         train_idx, test_idx, train_sizes = classwise_subset(
-            total, 
-            hparams_.num_clients, 
-            hparams_.num_groups, 10 if hparams_.cifar else 200,
+            total,
+            hparams_.num_clients,
+            hparams_.num_groups,
             0.1
         )
         cifar_test_loader_list = []
         cifar_train_loader_list = []
-        contrastive_dataset_list = []    
+        contrastive_dataset_list = []
         for c in range(hparams_.num_clients):
             ts = torch.utils.data.Subset(total, train_idx[c])
             train_dl = DataWrapper(
-                ts, 
-                batch_size=batch_size, 
-                num_workers=os.cpu_count(), 
+                ts,
+                batch_size=batch_size,
+                num_workers=os.cpu_count(),
                 pin_memory=not cifar,
             )
             train_dl.shuffle()
@@ -768,7 +824,7 @@ if __name__ == "__main__":
                 contrastive_dataset_list.append(None)
 
             train_sizes[i] = train_size
-    
+
     if interrupted:
         interrupt_range = [0, int(0.75*epochs)]
     else:
