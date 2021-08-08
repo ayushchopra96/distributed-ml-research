@@ -382,8 +382,8 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    miner = HardNegativeTripletMiner(0.5).cuda()  # AllTripletMiner(0.5).cuda()
-
+    miner = HardNegativeTripletMiner(0.5).cuda()  
+    
     flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0
     (
         flops_split_list,
@@ -767,7 +767,7 @@ if __name__ == "__main__":
                 def fn(index): return ts[index][0].unsqueeze(0).numpy()
                 contrastive = TripletDataset(labels, fn, len(ts), 4)
                 contrastive = DataWrapper(
-                    ts,
+                    contrastive,
                     batch_size=batch_size,
                     shuffle=True,
                     num_workers=os.cpu_count(),
@@ -808,9 +808,6 @@ if __name__ == "__main__":
             cifar_train_loader.shuffle()
             cifar_train_loader_list.append(cifar_train_loader)
             if hparams_.use_contrastive:
-                labels = [ts[i][1] for i in range(len(ts))]
-                def fn(index): return ts[index][0].unsqueeze(0).numpy()
-                contrastive = TripletDataset(labels, fn, len(ts), 4)
                 contrastive = DataWrapper(
                     ts,
                     batch_size=batch_size,
