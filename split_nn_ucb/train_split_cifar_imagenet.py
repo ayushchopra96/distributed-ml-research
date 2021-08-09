@@ -752,6 +752,8 @@ if __name__ == "__main__":
                 contrastive_dataset_list.append(contrastive)
             else:
                 contrastive_dataset_list.append(None)
+        train_sizes = np.array(
+            list(cifar_train_loader_list[0].ds_sizes.values()))
 
     elif hparams_.classwise_subset:
         # trainset = torchvision.datasets.CIFAR100(
