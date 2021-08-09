@@ -382,8 +382,8 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    miner = HardNegativeTripletMiner(0.5).cuda()  
-    
+    miner = HardNegativeTripletMiner(0.5).cuda()
+
     flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0
     (
         flops_split_list,
@@ -627,6 +627,7 @@ class RandomGammaCorrection(object):
 @dataclass
 class hparam:
     cifar: bool = True
+    non_iid_50: bool = True
     num_clients: int = 10
     k: int = 3
     discount: float = 0.8
@@ -697,7 +698,6 @@ if __name__ == "__main__":
         testset = torchvision.datasets.CIFAR10(
             root="./data", train=False, download=True, transform=transform_val
         )
-
     else:
         train_dir = "./data/tiny-imagenet-200/train/"
         val_dir = "./data/tiny-imagenet-200/val/"
@@ -734,7 +734,25 @@ if __name__ == "__main__":
         trainset = dsets.ImageFolder(train_dir, transform=transform)
         testset = dsets.ImageFolder(val_dir, transform=transform_val)
 
-    if hparams_.classwise_subset:
+    if hparams_.use_non_iid_50:
+        cifar_train_loader_list, cifar_test_loader_list = get_non_iid_50(
+            batch_size, 8, hparams_.num_clients)
+        contrastive_dataset_list = []
+        for c in range(hparams_.num_clients):
+            ts = cifar_train_loader_list[c]
+            if hparams_.use_contrastive:
+                contrastive = DataWrapper(
+                    ts,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    num_workers=os.cpu_count(),
+                )
+                contrastive.shuffle()
+                contrastive_dataset_list.append(contrastive)
+            else:
+                contrastive_dataset_list.append(None)
+
+    elif hparams_.classwise_subset:
         # trainset = torchvision.datasets.CIFAR100(
         #     root="./data", train=True, download=True, transform=transform
         # )
