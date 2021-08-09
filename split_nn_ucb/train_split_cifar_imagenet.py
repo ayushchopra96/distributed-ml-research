@@ -734,7 +734,7 @@ if __name__ == "__main__":
         trainset = dsets.ImageFolder(train_dir, transform=transform)
         testset = dsets.ImageFolder(val_dir, transform=transform_val)
 
-    if hparams_.use_non_iid_50:
+    if hparams_.non_iid_50:
         cifar_train_loader_list, cifar_test_loader_list = get_non_iid_50(
             batch_size, 8, hparams_.num_clients)
         contrastive_dataset_list = []
