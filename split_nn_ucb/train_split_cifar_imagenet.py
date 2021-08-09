@@ -37,6 +37,7 @@ from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet32 as masked_resnet32
 from MaskedResNets import MaskedResNet
 from functools import lru_cache
+from non_iid_50 import get_non_iid_50
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
