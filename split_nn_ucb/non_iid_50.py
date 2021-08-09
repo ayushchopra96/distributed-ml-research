@@ -7,6 +7,7 @@ import numpy as np
 from misc.utils import *
 from dataclasses import dataclass
 import torch
+import math 
 
 @dataclass
 class Arguments:
@@ -103,7 +104,7 @@ class NonIID50Train:
         self.index_cycles = {k: ShuffledCycle(list(range(v))) for k, v in self.ds_sizes.items()}
 
     def __len__(self):
-        return max(self.ds_sizes.values())
+        return int(math.ceil(max(self.ds_sizes.values())//self.batch_size))
 
     def get_one_example(self):
         c = self.client_id
@@ -164,8 +165,8 @@ def non_iid_50_collate_fn(batches):
     for x, y in batches:
         xb.append(x)
         yb.append(y)
-    xb = torch.tensor(np.stack(xb))
-    yb = torch.tensor(np.stack(yb))
+    xb = torch.FloatTensor(np.stack(xb)).contiguous()
+    yb = torch.LongTensor(np.stack(yb)).contiguous()
     return xb, yb
 
 def get_non_iid_50(batch_size, num_workers, num_clients):

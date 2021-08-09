@@ -41,6 +41,7 @@ from non_iid_50 import get_non_iid_50
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+#torch.backends.cudnn.enabled = False
 torch.manual_seed(123)
 
 # from tqdm.notebook import
@@ -518,7 +519,7 @@ def experiment_ucb(
         # acc_split, alice_split = split_nn.module.evaluator(test_loader, 0)
         accs_final, accs_alice = [], []
         for i in range(num_clients):
-            if isinstance(test_loader, list):
+            if isinstance(test_loader, list) or isinstance(test_loader, dict):
                 loader = test_loader[i]
             else:
                 loader = test_loader
