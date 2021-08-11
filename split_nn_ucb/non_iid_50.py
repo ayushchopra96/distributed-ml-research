@@ -41,9 +41,9 @@ class DataLoader:
 
         files = os.listdir(self.args.base_dir)            
         files = ["_".join(f.replace(".npy", "").split("_")[:-1]) for f in files]
-        files = list(set(files))
-        random_shuffle(77, files)
-        
+        files = sorted(list(set(files)))
+        idx = [5, 41, 28, 47, 19, 23, 20, 37, 34, 0, 45, 48, 31, 46, 35, 32, 44, 16, 11, 14, 40, 36, 38, 2, 15, 12, 1, 24, 17, 30, 10, 27, 13, 22, 8, 7, 49, 3, 9, 18, 42, 39, 33, 4, 29, 25, 26, 6, 21, 43]
+        files = [files[i] for i in idx]        
         self.task_set = {
             k: [v] for k, v in enumerate(files[:self.args.num_clients])
         }

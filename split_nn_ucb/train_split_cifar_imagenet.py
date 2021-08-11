@@ -739,20 +739,9 @@ if __name__ == "__main__":
     if hparams_.non_iid_50:
         cifar_train_loader_list, cifar_test_loader_list = get_non_iid_50(
             batch_size, 8, hparams_.num_clients)
-        contrastive_dataset_list = []
-        for c in range(hparams_.num_clients):
-            ts = cifar_train_loader_list[c]
-            if hparams_.use_contrastive:
-                contrastive = DataWrapper(
-                    ts,
-                    batch_size=batch_size,
-                    shuffle=True,
-                    num_workers=os.cpu_count(),
-                )
-                contrastive.shuffle()
-                contrastive_dataset_list.append(contrastive)
-            else:
-                contrastive_dataset_list.append(None)
+        contrastive_dataset_list = [None] * hparams_.num_clients
+        if hparams_.use_contrastive:
+            contrastive_dataset_list = cifar_train_loader_list
         train_sizes = np.array(
             list(cifar_train_loader_list[0].ds_sizes.values()))
 
