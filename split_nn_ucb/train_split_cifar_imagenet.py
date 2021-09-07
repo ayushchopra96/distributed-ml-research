@@ -518,7 +518,7 @@ def experiment_ucb(
         # acc_split, alice_split = split_nn.module.evaluator(test_loader, 0)
         accs_final, accs_alice = [], []
         for i in range(num_clients):
-            if isinstance(test_loader, list):
+            if isinstance(test_loader, list) or isinstance(test_loader, dict):
                 loader = test_loader[i]
             else:
                 loader = test_loader
