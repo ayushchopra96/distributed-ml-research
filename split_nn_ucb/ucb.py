@@ -6,7 +6,6 @@ from numba import njit
 
 class UniformRandom:
     def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
-        pass
         self.num_clients = num_clients
         self.k = k
 
