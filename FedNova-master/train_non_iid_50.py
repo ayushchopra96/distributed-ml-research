@@ -1,4 +1,3 @@
-from non_iid_50 import get_non_iid_50
 import os
 import numpy as np
 import time
@@ -29,6 +28,8 @@ import util_v4 as util
 from distoptim import *
 import sys
 sys.path.append("../split_nn_ucb/")
+
+from non_iid_50 import get_non_iid_50
 
 parser = argparse.ArgumentParser(description='CIFAR-10 baseline')
 parser.add_argument('--name', '-n',
