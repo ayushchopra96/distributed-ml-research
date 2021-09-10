@@ -642,11 +642,11 @@ class hparam:
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
-    l1_norm_weight: float = 5e-7
+    l1_norm_weight: float = 1e-4
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
-
+    interrupt_range: float = 0.75
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -675,6 +675,7 @@ if __name__ == "__main__":
     interrupted = hparams_.interrupted  # Interruption OFF/ON
     batch_size = hparams_.batch_size
     epochs = hparams_.epochs
+    interrupt_range = hparams_.interrupt_range
 
     if cifar:
         transform = transforms.Compose(
@@ -774,18 +775,7 @@ if __name__ == "__main__":
             cifar_train_loader_list.append(train_dl)
 
             if hparams_.use_contrastive:
-                labels = [ts[i][1] for i in range(len(ts))]
-                def fn(index): return ts[index][0].unsqueeze(0).numpy()
-                contrastive = TripletDataset(labels, fn, len(ts), 4)
-                contrastive = DataWrapper(
-                    contrastive,
-                    batch_size=batch_size,
-                    shuffle=True,
-                    num_workers=os.cpu_count(),
-                    pin_memory=not cifar,
-                )
-                contrastive.shuffle()
-                contrastive_dataset_list.append(contrastive)
+                contrastive_dataset_list.append(train_dl)
             else:
                 contrastive_dataset_list.append(None)
 
@@ -834,7 +824,7 @@ if __name__ == "__main__":
             train_sizes[i] = train_size
 
     if interrupted:
-        interrupt_range = [0, int(0.75*epochs)]
+        interrupt_range = [0, int(interrupt_range*epochs)]
     else:
         interrupt_range = [-2, 0]  # Hack for not using Local Parallelism
 
