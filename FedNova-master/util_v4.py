@@ -23,7 +23,6 @@ import torch.backends.cudnn as cudnn
 import torchvision.models as IMG_models
 
 from models import *
-from models import LogisticRegression
 
 # logging.basicConfig(level=logging.INFO)
 

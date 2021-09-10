@@ -1,16 +1,15 @@
 import os
 import multiprocessing as mp
-num_clients = 10
+import random
 
-fednova = """python3 train_non_iid_50.py --pattern constant \
-    --lr 0.02 --bs 32 --localE 2 --alpha 0.1 --mu 0 --momentum 0.9 \
-    --save -p --name FedNova_momen_baseline --optimizer fednova --model VGG \
-    --rank {} --size 16 --backend mpi \
-    --rounds 100 --seed 3 --NIID --print_freq 50"""
+num_clients = 1
+
+
+fednova = """python3 -m torch.distributed.launch --master_port={} launch_exp.py {}"""
 
 
 def run_fednova(rank):
-    os.system(fednova.format(rank))
+    os.system(fednova.format(random.randint(0, 10000), rank))
 
 
 with mp.Pool(num_clients) as p:
