@@ -10,7 +10,7 @@ Communication-Client Commpute can be traded-off by adjusting:
 - If a client is communicating with the server for a particular round, it optimizes the cross-entropy objective.
 
 ## Reducing Communicating Clients through Local Parallelism
-- For starting K rounds, all clients optimize the triplet loss.
+- For starting K rounds, all clients optimize Supervised Constrastive Loss (https://github.com/HobbitLong/SupContrast) (https://github.com/HobbitLong/SupContrast).
 - After K rounds, either all clients optimize cross-entropy (if no subset-selection) or a subset of clients (using UCB).
 
 ## Subset selection through Bayesian UCB
@@ -23,3 +23,6 @@ Communication-Client Commpute can be traded-off by adjusting:
 - V<sub>c</sub> and W<sub>c</sub> are forced to be extremely sparse using L1-norm constraint.
 - V<sub>c</sub> masks U such that the client c can retrieve knowledge that is common among other clients i.e. U
 - W<sub>c</sub> learns client c's task-specific knowledge.
+
+## Efficient Communication with sparse activations
+- We only communicate non-zero elements of the activation tensors and gradients to save bandwidth.

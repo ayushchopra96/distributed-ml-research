@@ -84,7 +84,7 @@ class BasicBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, hooked=False, option='A'):
+    def __init__(self, block, num_blocks, num_classes=10, hooked=False, option='A', num_layers=1, emb_dim=None):
         super(ResNet, self).__init__()
         self.in_planes = 16
         self.hooked = hooked
@@ -93,7 +93,7 @@ class ResNet(nn.Module):
             self.bn1 = nn.BatchNorm2d(16)
             self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1, option=option)
             self.conv_hook = nn.Conv2d(16, 64, kernel_size=1, bias=False)
-            self.fc = nn.Linear(64, num_classes)
+            self.fc = nn.Linear(64, num_classes if emb_dim is None else emb_dim)
         else:
             self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2, option=option)
             self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2, option=option)
@@ -138,8 +138,8 @@ def resnet18(hooked=False, option='A', num_classes=10):
     return ResNet(BasicBlock, [2, 2, 2], hooked=hooked, option=option, num_classes=num_classes)
 
 
-def resnet32(hooked=False, option='A', num_classes=10):
-    return ResNet(BasicBlock, [5, 5, 5], hooked=hooked, option=option, num_classes=num_classes)
+def resnet32(hooked=False, option='A', num_classes=10, emb_dim=None, num_layers=1):
+    return ResNet(BasicBlock, [5, 5, 5], hooked=hooked, option=option, num_classes=num_classes, num_layers=num_layers, emb_dim=emb_dim)
 
 
 def resnet44(hooked=False, option='A', num_classes=10):
