@@ -27,12 +27,12 @@ import torchvision.datasets as dsets
 import torchvision.transforms as transforms
 
 from torch.utils.data import Dataset, DataLoader
-from dataset_wrapper import DataWrapper, ContrastiveDataWrapper, classwise_subset
+from dataset_wrapper import DataWrapper, DataWrapper, classwise_subset
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
 # from triplettorch import TripletDataset
-# from triplettorch import AllTripletMiner, HardNegativeTripletMiner
-from losses import SupConLoss
+from triplettorch import AllTripletMiner, HardNegativeTripletMiner
+# from losses import SupConLoss
 from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet32 as masked_resnet32
@@ -276,7 +276,7 @@ class SplitNN(nn.Module):
         return accuracy_m1, accuracy_m2
 
 
-def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=False, avg=False, cifar=True, niid_classes=None, emb_dim=None):
+def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=False, avg=False, cifar=True, emb_dim=None):
     assert(not (num_partitions > 1 and use_masked))
     if cifar:
         num_classes = 10
@@ -286,8 +286,6 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
         num_classes = 200
         option = 'B'
         T_max = 38 if interrupted else 140
-    if niid_classes is not None:
-        num_classes = niid_classes
     
     alice_models = []
     for i in range(num_clients):
@@ -388,7 +386,7 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    constrastive_loss = SupConLoss()
+    contrastive_loss = HardNegativeTripletMiner(1.0).cuda()
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -441,7 +439,6 @@ def experiment_ucb(
                     if use_contrastive:
                         x, y = contrastive_list[i][b]
                         b, num_views = x.shape[0], x.shape[1]
-                        x = x.reshape(b * x.shape[1], *x.shape[2:])
                     x, y = x.to(device_2), y.to(device_2)
                     before_flops = deepcopy(flops_interrupted)
                     intermediate_output, x_next, flops_interrupted = interrupted_nn.module(
@@ -449,9 +446,9 @@ def experiment_ucb(
                     )
                     flops_split_client += (flops_interrupted - before_flops);
                     if use_contrastive:
-                        intermediate_output = F.normalize(intermediate_output.reshape(b, num_views, -1), dim=1)
-                        loss2 = constrastive_loss(
-                            intermediate_output, y)
+                        # intermediate_output = F.normalize(intermediate_output.reshape(b, num_views, -1), dim=1)
+                        loss2, _ = contrastive_loss(
+                            y, intermediate_output.reshape(b, -1))
                         cl_meter.update(loss2.mean().item())
                     else:
                         loss2 = criterion(x_next, y)
@@ -752,12 +749,11 @@ if __name__ == "__main__":
         contrastive_dataset_list = [None] * hparams_.num_clients
         if hparams_.use_contrastive:
             for ts in cifar_train_loader_list:
-                contrastive_dataset_list.append(ContrastiveDataWrapper(
+                contrastive_dataset_list.append(DataWrapper(
                     ts,
                     batch_size=batch_size,
                     num_workers=os.cpu_count(),
                     pin_memory=not cifar,
-                    num_views=3
                 ))
                 contrastive_dataset_list[-1].shuffle()
 
@@ -785,7 +781,7 @@ if __name__ == "__main__":
         contrastive_dataset_list = []
         for c in range(hparams_.num_clients):
             ts = torch.utils.data.Subset(total, train_idx[c])
-            train_dl = ContrastiveDataWrapper(
+            train_dl = DataWrapper(
                 ts,
                 batch_size=batch_size,
                 num_workers=os.cpu_count(),
@@ -795,12 +791,11 @@ if __name__ == "__main__":
             cifar_train_loader_list.append(train_dl)
 
             if hparams_.use_contrastive:
-                contrastive_dataset_list.append(ContrastiveDataWrapper(
+                contrastive_dataset_list.append(DataWrapper(
                     ts,
                     batch_size=batch_size,
                     num_workers=os.cpu_count(),
                     pin_memory=not cifar,
-                    num_views=3
                 ))
                 contrastive_dataset_list[-1].shuffle()
             else:
@@ -836,13 +831,13 @@ if __name__ == "__main__":
             cifar_train_loader.shuffle()
             cifar_train_loader_list.append(cifar_train_loader)
             if hparams_.use_contrastive:
-                contrastive = ContrastiveDataWrapper(
+                contrastive = DataWrapper(
                     ts,
                     batch_size=batch_size,
                     shuffle=True,
                     num_workers=os.cpu_count(),
                     pin_memory=not cifar,
-                    num_views=3
+                    
                 )
                 contrastive.shuffle()
                 contrastive_dataset_list.append(contrastive)
@@ -859,7 +854,7 @@ if __name__ == "__main__":
     # split_nn = get_model(num_clients=num_clients,
     #                      interrupted=False, cifar=cifar)
     interrupted_nn = get_model(
-        num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar, niid_classes=niid_classes, emb_dim=emb_dim)
+        num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar, emb_dim=emb_dim)
     print("Average Train set size per client: ", train_sizes.mean().item())
     (
         acc_split_list,
