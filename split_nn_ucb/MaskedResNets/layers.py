@@ -34,12 +34,16 @@ class MaskedLinear(Module):
         self.num_masks = num_masks
         self.weight = Parameter(torch.empty(
             (out_features, in_features), **factory_kwargs))
-        self.weight_masks = Parameter(torch.rand(
+        self.weight_additive_mask = Parameter(torch.rand(
+            (num_masks, out_features, in_features), **factory_kwargs))
+        self.weight_multiplicative_mask = Parameter(torch.rand(
             (num_masks, out_features, in_features), **factory_kwargs))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_features, **factory_kwargs))
-            self.bias_masks = Parameter(torch.rand(
+            self.bias_additive_mask = Parameter(torch.rand(
+                (num_masks, out_features), **factory_kwargs))
+            self.bias_multiplicative_mask = Parameter(torch.rand(
                 (num_masks, out_features), **factory_kwargs))
         else:
             self.register_parameter('bias', None)
@@ -53,9 +57,9 @@ class MaskedLinear(Module):
             init.uniform_(self.bias, -bound, bound)
 
     def forward(self, idx, input: Tensor) -> Tensor:
-        out_weight = (self.weight * self.weight_masks[idx].sigmoid())
+        out_weight = (self.weight * self.weight_multiplicative_mask[idx].sigmoid() + self.weight_additive_mask[idx])
         if self.bias is not None:
-            out_bias = (self.bias * self.bias_masks[idx].sigmoid())
+            out_bias = (self.bias * self.bias_multiplicative_mask[idx].sigmoid() + self.bias_additive_mask[idx])
         else:
             out_bias = None
         return F.linear(input, out_weight, out_bias)
@@ -157,17 +161,23 @@ class _ConvNd(nn.Module):
         if transposed:
             self.weight = Parameter(torch.empty(
                 (in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
-            self.weight_masks = Parameter(torch.rand(
+            self.weight_additive_mask = Parameter(torch.rand(
+                (num_masks, in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
+            self.weight_multiplicative_mask = Parameter(torch.rand(
                 (num_masks, in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
         else:
             self.weight = Parameter(torch.empty(
                 (out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
-            self.weight_masks = Parameter(torch.rand(
+            self.weight_additive_mask = Parameter(torch.rand(
+                (num_masks, out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
+            self.weight_multiplicative_mask = Parameter(torch.rand(
                 (num_masks, out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_channels, **factory_kwargs))
-            self.bias_masks = Parameter(torch.empty(
+            self.bias_additive_mask = Parameter(torch.empty(
+                (num_masks, out_channels), **factory_kwargs))
+            self.bias_multiplicative_mask = Parameter(torch.empty(
                 (num_masks, out_channels), **factory_kwargs))
         else:
             self.register_parameter('bias', None)
@@ -241,9 +251,9 @@ class MaskedConv2d(_ConvNd):
         # context_weights -> (num_in_models, 1)
         # self.weights -> (..., num_in_models)
         # out_weight -> (..., 1)
-        out_weight = (self.weight * self.weight_masks[idx].sigmoid())
+        out_weight = (self.weight * self.weight_multiplicative_mask[idx].sigmoid() + self.weight_additive_mask[idx])
         if self.bias is not None:
-            out_bias = (self.bias * self.bias_masks[idx].sigmoid())
+            out_bias = (self.bias * self.bias_multiplicative_mask[idx].sigmoid() + self.bias_additive_mask[idx])
         else:
             out_bias = None
         return self._conv_forward(input, out_weight, out_bias)
@@ -285,11 +295,15 @@ class _NormBase(Module):
         if self.affine:
             self.weight = Parameter(torch.empty(
                 num_features, **factory_kwargs))
-            self.weight_masks = Parameter(torch.rand(
+            self.weight_additive_mask = Parameter(torch.rand(
+                (num_masks, num_features), **factory_kwargs))
+            self.weight_multiplicative_mask = Parameter(torch.rand(
                 (num_masks, num_features), **factory_kwargs))
             self.bias = Parameter(torch.empty(
                 num_features, **factory_kwargs))
-            self.bias_masks = Parameter(torch.rand(
+            self.bias_multiplicative_mask = Parameter(torch.rand(
+                (num_masks, num_features), **factory_kwargs))
+            self.bias_additive_mask = Parameter(torch.rand(
                 (num_masks, num_features), **factory_kwargs))
         else:
             self.register_parameter("weight", None)
@@ -414,9 +428,9 @@ class _BatchNorm(_NormBase):
             bn_training = (self.running_mean is None) and (
                 self.running_var is None)
 
-        out_weight = (self.weight * self.weight_masks[idx].sigmoid())
+        out_weight = (self.weight * self.weight_multiplicative_mask[idx].sigmoid() + self.weight_additive_mask[idx])
         if self.bias is not None:
-            out_bias = (self.bias * self.bias_masks[idx].sigmoid())
+            out_bias = (self.bias * self.bias_multiplicative_mask[idx].sigmoid() + self.bias_additive_mask[idx])
         else:
             out_bias = None
 

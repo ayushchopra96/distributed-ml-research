@@ -386,8 +386,9 @@ def experiment_ucb(
 ):
     miner = HardNegativeTripletMiner(0.5).cuda()
 
-    flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0
-    (
+    flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
+    (   
+        flops_split_client_list,
         flops_split_list,
         flops_interrupted_list,
         acc_split_list,
@@ -396,7 +397,7 @@ def experiment_ucb(
         comm_interrupted_list,
         steps_list,
         time_list,
-    ) = ([], [], [], [], [], [], [], [])
+    ) = ([], [], [], [], [], [], [], [], [])
 
     wallclock_start = time()
 
@@ -445,9 +446,11 @@ def experiment_ucb(
                     if use_contrastive:
                         x, y = contrastive_list[i][b]
                     x, y = x.to(device_2), y.to(device_2)
+                    before_flops = deepcopy(flops_interrupted)
                     intermediate_output, x_next, flops_interrupted = interrupted_nn.module(
                         x, i, False, flops_interrupted
                     )
+                    flops_split_client += (flops_interrupted - before_flops);
                     if use_contrastive:
                         loss2, _ = miner(
                             y, x_next.reshape(x.shape[0], -1))
@@ -466,10 +469,12 @@ def experiment_ucb(
                     interrupted_nn.module.step(i, out=False)
                 else:
                     x, y = x.to(device_2), y.to(device_2)
+                    before_flops = deepcopy(flops_interrupted)
                     comm_interrupted += compute_comm_cost(x)
                     _, output_final, flops_interrupted = interrupted_nn.module(
                         x, i, True, flops_interrupted
                     )
+                    flops_split_client += (flops_interrupted - before_flops);
                     loss3 = criterion(output_final, y)
                     losses = loss3.clone().detach().cpu()
                     loss_mean, loss_std = torch.mean(
@@ -558,6 +563,7 @@ def experiment_ucb(
         steps_list.append(steps)
         time_list.append(time() - wallclock_start)
         flops_split_list.append(flops_split)
+        flops_split_client_list.append(flops_split_client);
         flops_interrupted_list.append(flops_interrupted)
         comm_split_list.append(comm_split)
         comm_interrupted_list.append(comm_interrupted)
@@ -579,6 +585,7 @@ def experiment_ucb(
         acc_interrupted_list,
         flops_split_list,
         flops_interrupted_list,
+        flops_split_client_list,
         time_list,
         steps_list,
         comm_split_list,
@@ -838,6 +845,7 @@ if __name__ == "__main__":
         acc_interrupted_list,
         flops_split_list,
         flops_interrupted_list,
+        flops_split_client_list,
         time_list,
         steps_list,
         comm_split_list,
@@ -867,6 +875,7 @@ if __name__ == "__main__":
     out_dict = {
         "Method Accuracy": str(acc_interrupted_list),
         "Method Flops": str(flops_interrupted_list),
+        "Method Client Flops": str(flops_split_client_list),
         "Method Comm Cost": str(comm_interrupted_list),
         "Time": str(time_list),
         "Steps": str(steps_list),
