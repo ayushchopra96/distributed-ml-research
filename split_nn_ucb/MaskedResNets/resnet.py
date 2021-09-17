@@ -114,9 +114,9 @@ class ResNet(nn.Module):
 
     def sparsity_constraint(self):
         loss = 0.
-        for pname, p in self.named_parameters():
-            if pname.find("masks") != -1:
-                loss = loss + torch.norm(p.sigmoid(), p=1)
+        # for pname, p in self.named_parameters():
+            # if pname.find("masks") != -1:
+            #     loss = loss + torch.abs(p).sum()
         return loss
 
     def _make_layer(self, block, planes, num_blocks, num_masks, stride, option):

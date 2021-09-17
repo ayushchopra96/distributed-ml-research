@@ -30,8 +30,6 @@ from torch.utils.data import Dataset, DataLoader
 from dataset_wrapper import DataWrapper, DataWrapper, classwise_subset
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
-# from triplettorch import TripletDataset
-from triplettorch import AllTripletMiner, HardNegativeTripletMiner
 # from losses import SupConLoss
 from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
@@ -299,7 +297,7 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
         alice.train()
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-            optim.Adam(alice.parameters(), weight_decay=1e-4)
+            optim.Adam(alice.parameters(), lr=4e-3)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
@@ -316,7 +314,7 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
     else:
         model_bob = resnet32(hooked=False, num_classes=num_classes)
     # opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-    opt_bob = optim.Adam(model_bob.parameters(), lr=2e-3, weight_decay=1e-4)
+    opt_bob = optim.Adam(model_bob.parameters(), lr=4e-3)
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
     # scheduler_bob = ReduceLROnPlateau(opt_bob, mode='max', factor=0.7, patience=5)
 
@@ -365,6 +363,7 @@ def to_interrupt_or_not(use_ucb, selected_ids, id, interrupt_range, ep):
 
     return (ucb_interrupt and use_ucb) or in_interrupt_range
 
+from pytorch_metric_learning import miners as pml_miners, losses as pml_losses
 
 def experiment_ucb(
     experiment_name,
@@ -386,7 +385,8 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    contrastive_loss = HardNegativeTripletMiner(1.0).cuda()
+    miner = pml_miners.MultiSimilarityMiner()
+    contrastive_loss = pml_losses.NTXentLoss(temperature=0.07)
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -421,10 +421,14 @@ def experiment_ucb(
 
     interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device_2)
     interrupted_nn.module.cuda()
-
+    if isinstance(train_loader_list, dict):
+        num_batches = max([len(tr_dl) for tr_dl in train_loader_list.values()])
+    else:
+        num_batches = max([len(tr_dl) for tr_dl in train_loader_list])
+    
     selected_ids = random.sample(list(range(num_clients)), k)
     for ep in t:  # 200
-        batch_iter = trange(len(train_loader_list[0]))
+        batch_iter = trange(num_batches)
         for b in batch_iter:
             for i in range(num_clients):  # 100
                 x, y = train_loader_list[i][b]
@@ -447,9 +451,10 @@ def experiment_ucb(
                     flops_split_client += (flops_interrupted - before_flops);
                     if use_contrastive:
                         # intermediate_output = F.normalize(intermediate_output.reshape(b, num_views, -1), dim=1)
-                        loss2, _ = contrastive_loss(
-                            y, intermediate_output.reshape(b, -1))
-                        cl_meter.update(loss2.mean().item())
+                        intermediate_output = intermediate_output.reshape(b, -1)
+                        pairs = miner(intermediate_output, y)
+                        loss2 = contrastive_loss(intermediate_output, y, pairs)
+                        cl_meter.update(loss2.cpu().detach().mean().item())
                     else:
                         loss2 = criterion(x_next, y)
                         intermediate_ce_meter.update(loss2.mean().item())
@@ -637,19 +642,19 @@ class hparam:
     discount: float = 0.8
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
-    batch_size: int = 32
+    batch_size: int = 128
     epochs: int = 100
     use_ucb: bool = True
     use_random: bool = True
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
-    l1_norm_weight: float = 5e-5
+    l1_norm_weight: float = 1e-5
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
     interrupt_range: float = 0.75
-    emb_dim: int = 64
+    emb_dim: int = 128
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -748,14 +753,7 @@ if __name__ == "__main__":
             batch_size, 8, hparams_.num_clients)
         contrastive_dataset_list = [None] * hparams_.num_clients
         if hparams_.use_contrastive:
-            for ts in cifar_train_loader_list:
-                contrastive_dataset_list.append(DataWrapper(
-                    ts,
-                    batch_size=batch_size,
-                    num_workers=os.cpu_count(),
-                    pin_memory=not cifar,
-                ))
-                contrastive_dataset_list[-1].shuffle()
+            contrastive_dataset_list = cifar_train_loader_list
 
         train_sizes = np.array(
             list(cifar_train_loader_list[0].ds_sizes.values()))
@@ -791,13 +789,7 @@ if __name__ == "__main__":
             cifar_train_loader_list.append(train_dl)
 
             if hparams_.use_contrastive:
-                contrastive_dataset_list.append(DataWrapper(
-                    ts,
-                    batch_size=batch_size,
-                    num_workers=os.cpu_count(),
-                    pin_memory=not cifar,
-                ))
-                contrastive_dataset_list[-1].shuffle()
+                contrastive_dataset_list.append(train_dl)
             else:
                 contrastive_dataset_list.append(None)
 
@@ -831,16 +823,7 @@ if __name__ == "__main__":
             cifar_train_loader.shuffle()
             cifar_train_loader_list.append(cifar_train_loader)
             if hparams_.use_contrastive:
-                contrastive = DataWrapper(
-                    ts,
-                    batch_size=batch_size,
-                    shuffle=True,
-                    num_workers=os.cpu_count(),
-                    pin_memory=not cifar,
-                    
-                )
-                contrastive.shuffle()
-                contrastive_dataset_list.append(contrastive)
+                contrastive_dataset_list.append(cifar_train_loader)
             else:
                 contrastive_dataset_list.append(None)
 

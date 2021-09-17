@@ -3,36 +3,55 @@ import random
 import math
 import numpy as np
 from sklearn.model_selection import train_test_split
+from misc.utils import *
+
+class ShuffledCycle:
+    def __init__(self, indices):
+        self.indices = indices
+        self.i = 0
+        random_shuffle(77, self.indices)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.i >= len(self.indices):
+            self.i = 0
+            random_shuffle(77, self.indices)
+        self.i += 1
+        return self.indices[self.i-1]
+
 
 class DataWrapper:
     def __init__(self, dataset, batch_size, *args, **kwargs):
         self.ds = dataset
-        self.indices = list(range(len(self.ds)))
+        #print(len(self.ds))
+        self.indices = ShuffledCycle(list(range(len(dataset))))
         self.num_batches = math.ceil(len(self.ds) / batch_size)
         self.batch_size = batch_size
 
-        self.complete_batches = len(self.ds) // batch_size
-        self.incomplete_batches = len(self.ds) % batch_size
-
     def shuffle(self):
-        idx = list(range(len(self.ds)))
-        random.shuffle(idx)
-        splitted = np.array_split(idx, self.num_batches)
-        incomplete_batch = []
-        complete_batches = []
-        for b in range(0, len(splitted)):
-            batch = list(splitted[b])
-            if b >= self.complete_batches:
-                incomplete_batch.extend(batch)
-            else:
-                complete_batches.append(batch)    
-        self.batch_idx = complete_batches + [incomplete_batch]
+        pass
+        #idx = list(range(len(self.ds)))
+        #random.shuffle(idx)
+        #splitted = np.array_split(idx, self.num_batches)
+        #incomplete_batch = []
+        #complete_batches = []
+        #for b in range(0, len(splitted)):
+        #    batch = list(splitted[b])
+        #    if b >= self.complete_batches:
+        #        incomplete_batch.extend(batch)
+        #    else:
+        #        complete_batches.append(batch)    
+        #self.batch_idx = complete_batches + [incomplete_batch]
 
     def __getitem__(self, idx):
         x_b, y_b = [], []
+        # print(idx, len(self))
         # print(self.batch_idx[idx])
-        for i in self.batch_idx[idx]:
-            x, y = self.ds[i]
+        for i in range(self.batch_size):
+            idx = next(self.indices)
+            x, y = self.ds[idx]
             x_b.append(x.unsqueeze(0))
             y_b.append(y)
         x_b = torch.cat(x_b, dim=0)
