@@ -34,13 +34,11 @@ class MaskedLinear(Module):
         self.num_masks = num_masks
         self.weight = Parameter(torch.empty(
             (out_features, in_features), **factory_kwargs))
-        self.weight_masks = Parameter(torch.rand(
-            (num_masks, out_features, in_features), **factory_kwargs))
+        self.weight_masks = Parameter(torch.ones_like(self.weight))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_features, **factory_kwargs))
-            self.bias_masks = Parameter(torch.rand(
-                (num_masks, out_features), **factory_kwargs))
+            self.bias_masks = Parameter(torch.ones_like(self.bias))
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
@@ -157,18 +155,15 @@ class _ConvNd(nn.Module):
         if transposed:
             self.weight = Parameter(torch.empty(
                 (in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
-            self.weight_masks = Parameter(torch.rand(
-                (num_masks, in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
+            self.weight_masks = Parameter(torch.ones_like(self.weight))
         else:
             self.weight = Parameter(torch.empty(
                 (out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
-            self.weight_masks = Parameter(torch.rand(
-                (num_masks, out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
+            self.weight_masks = Parameter(torch.ones_like(self.weight))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_channels, **factory_kwargs))
-            self.bias_masks = Parameter(torch.empty(
-                (num_masks, out_channels), **factory_kwargs))
+            self.bias_masks = Parameter(torch.ones_like(self.bias))
         else:
             self.register_parameter('bias', None)
 
@@ -238,9 +233,6 @@ class MaskedConv2d(_ConvNd):
                         self.padding, self.dilation, self.groups)
 
     def forward(self, idx: int, input: Tensor) -> Tensor:
-        # context_weights -> (num_in_models, 1)
-        # self.weights -> (..., num_in_models)
-        # out_weight -> (..., 1)
         out_weight = (self.weight * self.weight_masks[idx].sigmoid())
         if self.bias is not None:
             out_bias = (self.bias * self.bias_masks[idx].sigmoid())
@@ -285,12 +277,10 @@ class _NormBase(Module):
         if self.affine:
             self.weight = Parameter(torch.empty(
                 num_features, **factory_kwargs))
-            self.weight_masks = Parameter(torch.rand(
-                (num_masks, num_features), **factory_kwargs))
+            self.weight_masks = Parameter(torch.ones_like(self.weight))
             self.bias = Parameter(torch.empty(
                 num_features, **factory_kwargs))
-            self.bias_masks = Parameter(torch.rand(
-                (num_masks, num_features), **factory_kwargs))
+            self.bias_masks = Parameter(torch.ones_like(self.bias))
         else:
             self.register_parameter("weight", None)
             self.register_parameter("bias", None)

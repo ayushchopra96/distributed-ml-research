@@ -38,8 +38,8 @@ from MaskedResNets import MaskedResNet
 from functools import lru_cache
 from non_iid_50 import get_non_iid_50
 
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+# torch.backends.cudnn.deterministic = True
+# torch.backends.cudnn.benchmark = False
 #torch.backends.cudnn.enabled = False
 torch.manual_seed(123)
 # torch.autograd.set_detect_anomaly(True)
@@ -274,16 +274,16 @@ class SplitNN(nn.Module):
         return accuracy_m1, accuracy_m2
 
 
-def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=False, avg=False, cifar=True, emb_dim=None):
+def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=False, avg=False, cifar=True, emb_dim=None, non_iid_50=False):
     assert(not (num_partitions > 1 and use_masked))
     if cifar:
         num_classes = 10
         option = 'A'
-        T_max = 50 if interrupted else 200
-    else:
-        num_classes = 200
-        option = 'B'
-        T_max = 38 if interrupted else 140
+        T_max = 160
+    elif non_iid_50:
+        num_classes = 5
+        option = 'A'
+        T_max = 160
     
     alice_models = []
     for i in range(num_clients):
@@ -297,7 +297,7 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
         alice.train()
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-            optim.Adam(alice.parameters(), lr=4e-3)
+            optim.Adam(alice.parameters(), lr=1e-3, weight_decay=1e-4)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
@@ -313,8 +313,17 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
             num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
     else:
         model_bob = resnet32(hooked=False, num_classes=num_classes)
-    # opt_bob = optim.SGD(model_bob.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-    opt_bob = optim.Adam(model_bob.parameters(), lr=4e-3)
+    opt_bob = optim.Adam(model_bob.parameters(), lr=1e-3, weight_decay=1e-4)
+    # shared = []
+    # client_specific = []
+    # for pname, p in model_bob.named_parameters():
+    #     if pname.find("masks") != -1:
+    #         client_specific.append(p)
+    #     else:
+    #         shared.append(p)
+    # opt_bob = optim.Adam(
+    #     [{'params': shared, 'lr': 3e-3}, 
+    #     {'params': client_specific}], lr=3e-3)
     scheduler_bob = CosineAnnealingLR(opt_bob, T_max=T_max)
     # scheduler_bob = ReduceLROnPlateau(opt_bob, mode='max', factor=0.7, patience=5)
 
@@ -367,6 +376,8 @@ from pytorch_metric_learning import miners as pml_miners, losses as pml_losses
 
 def experiment_ucb(
     experiment_name,
+    alpha,
+    vanilla,
     split_nn,
     interrupted_nn,
     train_loader_list,
@@ -385,8 +396,9 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    miner = pml_miners.MultiSimilarityMiner()
-    contrastive_loss = pml_losses.NTXentLoss(temperature=0.07)
+    main_loss = pml_losses.TupletMarginLoss()
+    var_loss = pml_losses.IntraPairVarianceLoss()
+    contrastive_loss = pml_losses.MultipleLosses([main_loss, var_loss], weights=[1, 0.5])
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -409,9 +421,12 @@ def experiment_ucb(
 
     if use_random:
         bandit = UniformRandom(num_clients, discount_hparam, dataset_sizes, k)
-    else:
+    elif use_ucb:
         bandit = BayesianUCB(num_clients, discount_hparam, dataset_sizes, k)
-
+    else:
+        bandit = UniformRandom(num_clients, discount_hparam, dataset_sizes, num_clients)
+    if vanilla:
+        alpha = 0.
     criterion = nn.CrossEntropyLoss(reduction='none')
     flag = True
     t = trange(epochs, desc="", leave=True)
@@ -431,6 +446,8 @@ def experiment_ucb(
         batch_iter = trange(num_batches)
         for b in batch_iter:
             for i in range(num_clients):  # 100
+                total_loss = 0.
+
                 x, y = train_loader_list[i][b]
                 # zero grads
                 # split_nn.module.zero_grads(i)
@@ -438,8 +455,8 @@ def experiment_ucb(
                 # split_nn.module.train(i)
                 interrupted_nn.module.train(i)
 
-                # interrupt activation flow
-                if to_interrupt_or_not(use_ucb or use_random, selected_ids, i, interrupt_range, ep):
+                if not vanilla:
+                    # interrupt activation flow
                     if use_contrastive:
                         x, y = contrastive_list[i][b]
                         b, num_views = x.shape[0], x.shape[1]
@@ -450,10 +467,9 @@ def experiment_ucb(
                     )
                     flops_split_client += (flops_interrupted - before_flops);
                     if use_contrastive:
-                        # intermediate_output = F.normalize(intermediate_output.reshape(b, num_views, -1), dim=1)
-                        intermediate_output = intermediate_output.reshape(b, -1)
-                        pairs = miner(intermediate_output, y)
-                        loss2 = contrastive_loss(intermediate_output, y, pairs)
+                        # emb = F.normalize(intermediate_output.reshape(b, num_views, -1), dim=1)
+                        emb = x_next.reshape(b, -1)
+                        loss2 = contrastive_loss(emb, y)
                         cl_meter.update(loss2.cpu().detach().mean().item())
                     else:
                         loss2 = criterion(x_next, y)
@@ -465,9 +481,10 @@ def experiment_ucb(
                         comm_interrupted += 2 * 4 * 1e-6
                     else:
                         loss_mean, loss_std = None, None
-                    loss2.mean().backward()
+                    total_loss += alpha * loss2.mean()
                     interrupted_nn.module.step(i, out=False)
-                else:
+
+                if not to_interrupt_or_not(use_ucb or use_random, selected_ids, i, interrupt_range, ep):
                     x, y = x.to(device_2), y.to(device_2)
                     before_flops = deepcopy(flops_interrupted)
                     comm_interrupted += compute_comm_cost(x)
@@ -479,8 +496,8 @@ def experiment_ucb(
                     losses = loss3.clone().detach().cpu()
                     loss_mean, loss_std = torch.mean(
                         losses).item(), torch.std(losses).item()
-                    total_loss = loss3.mean()
-                    final_ce_meter.update(total_loss.item())
+                    total_loss += (1-alpha) * loss3.mean()
+                    final_ce_meter.update(loss3.mean().item())
                     if isinstance(interrupted_nn.module.bob[0].server_model, MaskedResNet):
                         sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint(
                         )
@@ -642,19 +659,21 @@ class hparam:
     discount: float = 0.8
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
-    batch_size: int = 128
-    epochs: int = 100
+    batch_size: int = 32
+    epochs: int = 150
     use_ucb: bool = True
     use_random: bool = True
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
-    l1_norm_weight: float = 1e-5
+    l1_norm_weight: float = 0.#1e-6
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
     interrupt_range: float = 0.75
     emb_dim: int = 128
+    alpha: float = 0.3
+    vanilla: bool = True
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -837,7 +856,7 @@ if __name__ == "__main__":
     # split_nn = get_model(num_clients=num_clients,
     #                      interrupted=False, cifar=cifar)
     interrupted_nn = get_model(
-        num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar, emb_dim=emb_dim)
+        num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar, emb_dim=emb_dim, non_iid_50=hparams_.non_iid_50)
     print("Average Train set size per client: ", train_sizes.mean().item())
     (
         acc_split_list,
@@ -851,6 +870,8 @@ if __name__ == "__main__":
         comm_interrupted_list,
     ) = experiment_ucb(
         experiment_name,
+        hparams_.alpha,
+        hparams_.vanilla,
         None,
         interrupted_nn,
         cifar_train_loader_list,
