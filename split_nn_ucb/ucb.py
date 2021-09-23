@@ -3,9 +3,106 @@ from einops import repeat
 import random
 import numpy as np
 from numba import njit
+from vowpalwabbit import pyvw
+
+class VWBandit:
+    def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
+        self.model = pyvw.vw(f"--cb_explore {num_clients} --epsilon 0.05", quiet=True)
+        self.losses_mean, self.losses_std, self.selection_mask = None, None, None
+        self.discount = discount_hparam
+        self.num_clients = num_clients
+        self.k = k
+        self.max_history = 16  # store data for only last this number of steps
+        self.end_round()
+
+    def update_client(self, client_id, loss_mean, loss_std, was_selected):
+        round_counter = len(self.losses_mean) - 1
+        if was_selected:
+            self.losses_mean[round_counter][client_id] = loss_mean
+            self.losses_std[round_counter][client_id] = loss_std
+        # print(self.losses_mean[self.round_counter][client_id], self.losses_std[self.round_counter][client_id])
+        self.selection_mask[round_counter][client_id] = 1. if was_selected else 0.
+    
+    def train(self):
+        upper_bound = self.losses_mean[-1] * self.selection_mask[-1] + 1.96 * self.losses_std[-1] / np.sqrt(self.selection_mask[-1].sum(0) + 1e-4) * self.selection_mask[-1] 
+        actions, probs = self.label
+        for a, p in zip(actions, probs):
+            reward = upper_bound[a]
+            example = f"{a}:{reward}:{p} | {self.prev_features}"
+            self.model.learn(example)
+        
+    def end_round(self):
+        if self.losses_std is not None:
+            self.train()
+
+        zeros = np.zeros((1, self.num_clients))
+        if self.losses_std is not None:
+            self.losses_mean = np.append(self.losses_mean, zeros.copy(), axis=0)
+            self.losses_std = np.append(self.losses_std, zeros.copy(), axis=0)
+            self.selection_mask = np.append(self.selection_mask, zeros.copy(), axis=0)
+        else:
+            self.losses_mean = zeros.copy()
+            self.losses_std =  zeros.copy()
+            self.selection_mask = zeros.copy()
+
+        round_counter = len(self.losses_mean)
+
+        if round_counter == 1:
+            self.losses_mean[0] = 100.
+            self.losses_std[0] = 100.
+        elif round_counter == 2:
+            self.losses_mean[1, :] = (100. + self.losses_mean[0, :]) / 2 
+            self.losses_std[1, :] = (100. + self.losses_std[0, :]) / 2
+        else:
+            self.losses_mean[-1, :] = (self.losses_mean[-3, :] + self.losses_mean[-2, :]) / 2
+            self.losses_std[-1, :] = (self.losses_std[-3, :] + self.losses_std[-2, :]) / 2
+
+        if round_counter >= self.max_history:
+            self.losses_mean = np.delete(self.losses_mean, 0, 0)
+            self.losses_std = np.delete(self.losses_std, 0, 0)
+            self.selection_mask = np.delete(self.selection_mask, 0, 0)
+
+    def make_features(self):
+        example = ""
+        feature_counter = 0
+        # Losses mean
+        for r in range(self.losses_mean.shape[0]):
+            for c in range(self.losses_mean[0].shape[0]):
+                example += f" feature{feature_counter}={float(self.losses_mean[r, c])}"
+                feature_counter += 1
+
+        # Losses std
+        for r in range(self.losses_mean.shape[0]):
+            for c in range(self.losses_mean[0].shape[0]):
+                example += f" feature{feature_counter}={float(self.losses_std[r, c])}"
+                feature_counter += 1
+
+        # selection mask
+        for r in range(self.losses_mean.shape[0]):
+            for c in range(self.losses_mean[0].shape[0]):
+                example += f" feature{feature_counter}={float(self.selection_mask[r, c])}"
+                feature_counter += 1
+
+        self.prev_features = example
+        return example
+
+    def select_clients(self):
+        self.make_features()
+        pmf = self.model.predict(self.prev_features)
+        actions, probs = self.get_actions(pmf)
+        self.label = (actions, probs)
+        return actions
+
+    def get_actions(self, pmf):
+        pmf = np.array(pmf)
+        # print(pmf)
+        idx = np.argsort(pmf)[-self.k:]
+        prob = pmf[idx].tolist()
+        return idx.tolist(), prob
 
 class UniformRandom:
     def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
+        pass
         self.num_clients = num_clients
         self.k = k
 
@@ -59,10 +156,6 @@ class BayesianUCB:
         else:
             self.losses_mean[-1, :] = (self.losses_mean[-3, :] + self.losses_mean[-2, :]) / 2
             self.losses_std[-1, :] = (self.losses_std[-3, :] + self.losses_std[-2, :]) / 2
-        # print(self.losses_mean, len(self.losses_mean))
-        # assert(all(self.losses_mean[-1]))
-        # assert(all(self.losses_std[-1]))
-
 
         if round_counter >= self.max_history:
             self.losses_mean = np.delete(self.losses_mean, 0, 0)
@@ -77,6 +170,15 @@ class BayesianUCB:
             self.losses_std, 
             self.selection_mask
         )
+        # scores2 = BayesianAdvantageVec(
+        #     self.discount, 
+        #     self.num_clients, 
+        #     self.losses_mean, 
+        #     self.losses_std, 
+        #     self.selection_mask
+        # )
+        # assert(np.allclose(scores, scores2))
+        # print(np.allclose(scores, scores2))
         # print(scores)
         return topk(list(scores), self.k)
 
@@ -94,155 +196,30 @@ def BayesianAdvantage(
     counts = np.zeros(num_clients) + 1e-15
     for t in range(round_counter):
         for c in range(num_clients):
-            mean[c] += discount ** (round_counter - 1 - t) * losses_mean[t][c]
-            std[c] += discount ** (round_counter - 1 - t) * losses_std[t][c]
-            counts[c] += discount ** (t) * (1 - client_selection_mask[t][c])
-    # print("mask", client_selection_mask.sum(0))
-    # print("losses", losses_mean.sum(0))
-    # print("std", losses_std.sum(0))
-    # print(mean, counts, std)
-    scores = mean / counts + 2 * std / np.sqrt(counts)
+            mean[c] += (discount ** (round_counter - 1 - t)) * losses_mean[t][c]
+            std[c] += (discount ** (round_counter - 1 - t)) * losses_std[t][c]
+            counts[c] += (discount ** (round_counter - 1 - t)) * (client_selection_mask[t][c])
+    scores = mean + 2 * std / np.sqrt(counts)
     return scores
 
-class UCB:
-    def __init__(self, num_clients, discount_hparam, dataset_sizes, k):
-        self.losses_mean, self.losses_std, self.selection_mask = [], [], []
-        self.discount = discount_hparam
-        self.dataset_ratio = dataset_fractions(dataset_sizes)
-        self.num_clients = num_clients
-        self.k = k
-        self.round_counter = -1
-        self.max_history = 2048  # store data for only last this number of steps
-        self.end_round()
-
-    def update_client(self, client_id, loss_mean, loss_std, was_selected):
-        if not was_selected or (loss_mean is None and loss_std is None):
-            # loss_mean and loss_std are None if the client wasn't selected
-            if self.round_counter == 0:
-                # If it is the initial round
-                loss_mean = 0.
-                loss_std = 100.  # Assume large std
-            else:
-                # Assume loss statistics are discounted previous round's statistics
-                loss_mean = self.losses_mean[self.round_counter -
-                                             1][client_id] * self.discount
-                loss_std = self.losses_std[self.round_counter -
-                                            1][client_id] * self.discount
-
-        self.losses_mean[self.round_counter][client_id] = loss_mean
-        self.losses_std[self.round_counter][client_id] = loss_std
-        self.selection_mask[self.round_counter][client_id] = 1. if was_selected else 0.
-
-    def end_round(self):
-        zeros = [0.] * self.num_clients
-        self.losses_mean.append(zeros)
-        self.losses_std.append(zeros)
-        self.selection_mask.append(zeros)
-        self.round_counter += 1
-
-        if self.round_counter >= self.max_history:
-            self.losses_mean.pop(0)
-            self.losses_std.pop(0)
-            self.selection_mask.pop(0)
-            self.round_counter -= 1
-
-    def select_clients(self):
-        A = advantage(
-            torch.tensor(self.losses_mean),
-            torch.tensor(self.selection_mask),
-            self.discount,
-            torch.tensor(self.losses_std),
-            self.dataset_ratio
-        )
-        return select_clients(A, self.k)
-
-
-def advantage(
-    client_losses,
-    client_selection_mask,
-    discount_hparam,
-    client_loss_stds,
-    dataset_ratio
-):
-    # discount_hparam decides how much to weigh previous round's information.
-    # discount_hparam can be in [0, 1]. If equal to 1 -> don't use any old information
-    # If equal to 0 -> weigh old information equally to new information
-
-    # client_losses -> (num_rounds, num_clients)
-
-    # client_loss_stds -> (num_rounds, num_clients)
-    num_rounds = client_losses.shape[0]
-
-    # max_std is the maximum standard deviation in the local loss computed over the latest update
-    # Compute max_std for last round
-    max_std = client_loss_stds[-1, :].max() + 1e-15
-
-    # Compute discounted time indices
-    gamma = torch.pow(
-        discount_hparam,
-        torch.arange(num_rounds-1, -1, -1)
-    ).unsqueeze(1)
-
-    L = loss_term(
-        client_losses,
-        client_selection_mask,
-        discount_hparam,
-        gamma
-    )
-
-    N, t = client_selection_term(
-        client_selection_mask,
-        gamma
-    )
-
-    U = exploration_term(
-        t,
-        N,
-        max_std
-    )
-
-    p = dataset_ratio
-
-    exploitation = L / N * p
-    exploration = U * p
-    return exploitation + exploration
-
-
-def loss_term(
-    client_losses,
-    client_selection_mask,
-    discount_hparam,
-    gamma
-):
-
-    estimated_losses = client_losses.clone()
-    num_rounds, num_clients = client_losses.shape
-    for r in range(1, num_rounds):
-        # Assuming the loss in the next round is the average of losses in the current round and previous round
-        estimated_losses[r, :] = (
-            estimated_losses[r, :] + client_losses[r - 1, :]) / 2
-
-    # Sum over all rounds
-    return (
-        repeat(gamma, 'r c -> r (repeat c)', repeat=num_clients) *
-        client_selection_mask * estimated_losses).sum(dim=0)
-
+def BayesianAdvantageVec(
+    discount, 
+    num_clients, 
+    losses_mean, 
+    losses_std, 
+    client_selection_mask
+    ):
+    round_counter = losses_mean.shape[0] - 1 - np.arange(0, losses_mean.shape[0])
+    round_counter = round_counter.reshape(1, -1)
+    print(round_counter)
+    mean = np.power(discount, round_counter) @ losses_mean
+    std = np.power(discount, round_counter) @ losses_std
+    counts = np.power(discount, round_counter) @ client_selection_mask
+    scores = mean + 2 * std / np.sqrt(counts)
+    return scores
 
 def dataset_fractions(dataset_sizes):
     return dataset_sizes / sum(dataset_sizes)
-
-
-def client_selection_term(client_selection_mask, gamma):
-    # client_selection_mask -> (num_rounds, num_clients)
-    n = (gamma * client_selection_mask).sum(dim=0) + 1e-15
-    t = gamma.sum()
-    return n, t
-
-
-def exploration_term(t, client_selection_terms, max_std):
-    return torch.sqrt(
-        2 * max_std * max_std * torch.log(t) / client_selection_terms
-    )
 
 
 def select_clients(A, k):
@@ -264,9 +241,15 @@ def topk(arr: list, k: int) -> list:
     return [item[-1] for item in tuples[:k]]
 
 
+
 if __name__ == "__main__":
+    from joblib import Parallel, delayed
+    from tqdm import trange
     num_rounds = 150
     num_clients = 10
+    
+    torch.manual_seed(0)
+    np.random.seed(0)
 
     losses = torch.randn((num_rounds, num_clients))
     std = torch.randn((num_rounds, num_clients))
@@ -276,33 +259,199 @@ if __name__ == "__main__":
     dataset_sizes = torch.randint(100, 10000, (num_clients,))
 
     p = dataset_fractions(dataset_sizes)
-    A = advantage(losses, mask, 0.97, std, p)
-    assert(A.shape == p.shape)
 
-    print(A)
+    def _run_one(r, c, selected, selected_r, b):
+        cum_reward = 0
+        cum_reward_r = 0
 
-    print(select_clients(A, 3))
+        l = torch.rand((num_clients,)).uniform_((c) / (r+1), (c+1) / (r+1))
+        if selected_r:
+            cum_reward_r += l.mean().item()
+        if selected:
+            b.update_client(c, l.mean(), l.std(), selected)
+            cum_reward += l.mean().item()
+        else:
+            # l = torch.rand((num_clients,)).uniform_((10 * c) / (r+1), 10 * (c+1) / (r+1))
+            b.update_client(c, None, None, selected)
+        return cum_reward, cum_reward_r
 
-    b = UCB(
+    b_r = UniformRandom(
         num_clients,
-        0.7,
+        0.9,
         dataset_sizes,
-        3
+        6
     )
-    b = BayesianUCB(
+    
+    # selected_ids = random.sample(list(range(num_clients)), 6)
+    # # print(Parallel(n_jobs=-1)(delayed(_run_one)(0, c, c in selected_ids, b) for c in range(num_clients)))
+    # random_rewards = []
+    # cum_reward = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
+    #         b.end_round()
+    #         selected_ids = b.select_clients()
+
+    #         random_rewards.append(cum_reward)
+    
+    b = VWBandit(
         num_clients,
-        0.85,
+        0.9,
         dataset_sizes,
-        3
+        6
     )
-    selected_ids = random.sample(list(range(num_clients)), 3)
-    for r in range(num_rounds):
+    
+    selected_ids = b.select_clients()
+    selected_ids_r = b_r.select_clients()
+    vw_rewards = []
+    cum_reward = 0.
+    cum_reward_r = 0.
+    for r in trange(num_rounds):
         for _ in range(160):
-            for c in range(num_clients):
-                l = torch.rand((dataset_sizes[0],)).uniform_((c) / (r+1), (c+1) / (r+1))# * (c + 1) * (1 / (r + 1))
-                # l = torch.zeros((dataset_sizes[0],))
-                # print(c in selected_ids)
-                b.update_client(c, l.mean(), l.std(), c in selected_ids)
-        b.end_round()
-        selected_ids = b.select_clients()
-        print(selected_ids)
+            out = Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, c in selected_ids_r, b) for c in range(num_clients))
+            cum_reward += sum([item[0] for item in out])
+            cum_reward_r += sum([item[1] for item in out])
+
+            b.end_round()
+
+            selected_ids = b.select_clients()
+            selected_ids_r = b_r.select_clients()
+
+            vw_rewards.append(cum_reward - cum_reward_r)
+
+    # b = BayesianUCB(
+    #     num_clients,
+    #     0.9,
+    #     dataset_sizes,
+    #     6
+    # )
+    # selected_ids = random.sample(list(range(num_clients)), 6)
+    # ucb9_rewards = []
+    # cum_reward = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         cum_reward += sum(Parallel(n_jobs=-1)(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
+    #         b.end_round()
+    #         selected_ids = b.select_clients()
+
+    #         ucb9_rewards.append(cum_reward)
+
+    # b = BayesianUCB(
+    #     num_clients,
+    #     0.8,
+    #     dataset_sizes,
+    #     6
+    # )
+    # selected_ids = random.sample(list(range(num_clients)), 6)
+    # ucb8_rewards = []
+    # cum_reward = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
+    #         b.end_round()
+    #         selected_ids = b.select_clients()
+
+    #         ucb8_rewards.append(cum_reward)
+
+    # b = BayesianUCB(
+    #     num_clients,
+    #     0.6,
+    #     dataset_sizes,
+    #     6
+    # )
+    # selected_ids = random.sample(list(range(num_clients)), 6)
+    # ucb6_rewards = []
+    # cum_reward = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
+    #         b.end_round()
+    #         selected_ids = b.select_clients()
+
+    #         ucb6_rewards.append(cum_reward)
+
+    # b = BayesianUCB(
+    #     num_clients,
+    #     0.5,
+    #     dataset_sizes,
+    #     6
+    # )
+    # selected_ids = random.sample(list(range(num_clients)), 6)
+    # ucb5_rewards = []
+    # cum_reward = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
+    #         b.end_round()
+    #         selected_ids = b.select_clients()
+
+    #         ucb5_rewards.append(cum_reward)
+
+    # b = BayesianUCB(
+    #     num_clients,
+    #     0.4,
+    #     dataset_sizes,
+    #     6
+    # )
+    # selected_ids = random.sample(list(range(num_clients)), 6)
+    # ucb4_rewards = []
+    # cum_reward = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
+    #         b.end_round()
+    #         selected_ids = b.select_clients()
+
+    #         ucb4_rewards.append(cum_reward)
+
+    # b = BayesianUCB(
+    #     num_clients,
+    #     0.95,
+    #     dataset_sizes,
+    #     6
+    # )
+    # selected_ids = random.sample(list(range(num_clients)), 6)
+    # ucb95_rewards = []
+    # cum_reward = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
+    #         b.end_round()
+    #         selected_ids = b.select_clients()
+
+    #         ucb95_rewards.append(cum_reward)
+
+    # import plotly.graph_objects as go
+
+    # fig = go.Figure()
+    # fig = fig.add_trace(
+    #     go.Scatter(y=random_rewards, name='Uniform Random')
+    # )
+    # fig = fig.add_trace(
+    #     go.Scatter(y=ucb9_rewards, name='Bayesian UCB gamma=0.9')
+    # )
+    # fig = fig.add_trace(
+    #     go.Scatter(y=ucb8_rewards, name='Bayesian UCB gamma=0.8')
+    # )
+    # fig = fig.add_trace(
+    #     go.Scatter(y=ucb4_rewards, name='Bayesian UCB gamma=0.4')
+    # )
+    # fig = fig.add_trace(
+    #     go.Scatter(y=ucb5_rewards, name='Bayesian UCB gamma=0.5')
+    # )
+    # fig = fig.add_trace(
+    #     go.Scatter(y=ucb6_rewards, name='Bayesian UCB gamma=0.6')
+    # )
+    # fig = fig.add_trace(
+    #     go.Scatter(y=ucb95_rewards, name='Bayesian UCB gamma=0.95')
+    # )
+
+    # fig.show()
+    
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+    fig = fig.add_trace(
+        go.Scatter(y=vw_rewards, name='VowpalWabbit')
+    )    
+    fig.show()

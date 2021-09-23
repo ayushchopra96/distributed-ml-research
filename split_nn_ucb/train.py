@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from fvcore.nn.flop_count import flop_count
 from models_cifar import resnet32, test
-from ucb import UCB, UniformRandom, BayesianUCB
+from ucb import UniformRandom, BayesianUCB, VWBandit
 from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 import h5py
@@ -30,7 +30,6 @@ from torch.utils.data import Dataset, DataLoader
 from dataset_wrapper import DataWrapper, DataWrapper, classwise_subset
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
-# from losses import SupConLoss
 from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet32 as masked_resnet32
@@ -176,18 +175,18 @@ class SplitNN(nn.Module):
 
     def forward(self, inputs, i, out, flops):
         to_server, output = self.clients[f"alice{i}"](inputs)
-        flops += compute_flops(self.clients[f"alice{i}"], (inputs,), "alice")
+        client_flops = compute_flops(self.clients[f"alice{i}"], (inputs,), "alice")
         if not self.interrupted or out:
             if self.is_partitioned_or_masked:
                 output_final = self.bob[0](to_server, i)
                 flops += compute_flops(self.bob[0], (to_server, i), "bob")
-                return output, output_final, flops
+                return output, output_final, flops + client_flops, client_flops
             else:
                 output_final = self.bob[0](to_server)
                 flops += compute_flops(self.bob[0], (to_server,), "bob")
-                return output, output_final, flops
+                return output, output_final, flops + client_flops, client_flops
         else:
-            return output, to_server, flops
+            return output, to_server, flops + client_flops
 
     def get_grad(self):
         grad_to_client = self.bob[0].server_backward()
@@ -255,7 +254,7 @@ class SplitNN(nn.Module):
                 images = images.to(device)
                 labels = labels.to(device)
 
-            output, output_final, f = self.forward(
+            output, output_final, f, fc = self.forward(
                 images, i, out=True, flops=0)
             _, predicted_m1 = torch.max(output_final.data, 1)
             r, predicted_m2 = torch.max(output.data, 1)
@@ -388,6 +387,7 @@ def experiment_ucb(
     k,
     use_ucb,
     use_random,
+    use_vw,
     use_contrastive,
     discount_hparam,
     dataset_sizes,
@@ -396,9 +396,10 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    main_loss = pml_losses.TupletMarginLoss()
-    var_loss = pml_losses.IntraPairVarianceLoss()
-    contrastive_loss = pml_losses.MultipleLosses([main_loss, var_loss], weights=[1, 0.5])
+    # main_loss = pml_losses.TupletMarginLoss()
+    # var_loss = pml_losses.IntraPairVarianceLoss()
+    # contrastive_loss = pml_losses.MultipleLosses([main_loss, var_loss], weights=[1, 0.5])
+    contrastive_loss = pml_losses.SupConLoss(temperature=0.1)
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -423,6 +424,8 @@ def experiment_ucb(
         bandit = UniformRandom(num_clients, discount_hparam, dataset_sizes, k)
     elif use_ucb:
         bandit = BayesianUCB(num_clients, discount_hparam, dataset_sizes, k)
+    elif use_vw:
+        bandit = VWBandit(num_clients, discount_hparam, dataset_sizes, k)
     else:
         bandit = UniformRandom(num_clients, discount_hparam, dataset_sizes, num_clients)
     if vanilla:
@@ -455,7 +458,7 @@ def experiment_ucb(
                 # split_nn.module.train(i)
                 interrupted_nn.module.train(i)
 
-                if not vanilla:
+                if not vanilla and to_interrupt_or_not(use_ucb or use_random, selected_ids, i, interrupt_range, ep):
                     # interrupt activation flow
                     if use_contrastive:
                         x, y = contrastive_list[i][b]
@@ -465,10 +468,10 @@ def experiment_ucb(
                     intermediate_output, x_next, flops_interrupted = interrupted_nn.module(
                         x, i, False, flops_interrupted
                     )
-                    flops_split_client += (flops_interrupted - before_flops);
+                    flops_split_client += (flops_interrupted - before_flops)
                     if use_contrastive:
-                        # emb = F.normalize(intermediate_output.reshape(b, num_views, -1), dim=1)
-                        emb = x_next.reshape(b, -1)
+                        emb = intermediate_output.reshape(b, -1)
+                        # emb = x_next.reshape(b, -1)
                         loss2 = contrastive_loss(emb, y)
                         cl_meter.update(loss2.cpu().detach().mean().item())
                     else:
@@ -481,22 +484,22 @@ def experiment_ucb(
                         comm_interrupted += 2 * 4 * 1e-6
                     else:
                         loss_mean, loss_std = None, None
-                    total_loss += alpha * loss2.mean()
+                    total_loss = total_loss + loss2.mean()
+                    total_loss.backward()
                     interrupted_nn.module.step(i, out=False)
 
-                if not to_interrupt_or_not(use_ucb or use_random, selected_ids, i, interrupt_range, ep):
+                else:
                     x, y = x.to(device_2), y.to(device_2)
-                    before_flops = deepcopy(flops_interrupted)
                     comm_interrupted += compute_comm_cost(x)
-                    _, output_final, flops_interrupted = interrupted_nn.module(
+                    _, output_final, flops_interrupted, flops_client = interrupted_nn.module(
                         x, i, True, flops_interrupted
                     )
-                    flops_split_client += (flops_interrupted - before_flops);
+                    flops_split_client += flops_client
                     loss3 = criterion(output_final, y)
                     losses = loss3.clone().detach().cpu()
                     loss_mean, loss_std = torch.mean(
                         losses).item(), torch.std(losses).item()
-                    total_loss += (1-alpha) * loss3.mean()
+                    total_loss = total_loss + loss3.mean()
                     final_ce_meter.update(loss3.mean().item())
                     if isinstance(interrupted_nn.module.bob[0].server_model, MaskedResNet):
                         sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint(
@@ -505,18 +508,17 @@ def experiment_ucb(
                     total_loss.backward()
                     grad = interrupted_nn.module.backward(i, out=True)
                     interrupted_nn.module.step(i, out=True)
-
                     comm_interrupted += compute_comm_cost(grad)
 
                 steps += 1
-
-                bandit.update_client(i, loss_mean, loss_std, i in selected_ids)
+                if ep not in range(*interrupt_range):
+                    bandit.update_client(i, loss_mean, loss_std, i in selected_ids)
 
                 # copy params
-                # split_nn.module.copy_params(i)
                 interrupted_nn.module.copy_params(i)
 
-            bandit.end_round()
+            if ep not in range(*interrupt_range):
+                bandit.end_round()
             selected_ids = bandit.select_clients()
 
             if use_contrastive:
@@ -656,22 +658,23 @@ class hparam:
     non_iid_50: bool = True
     num_clients: int = 10
     k: int = 3
-    discount: float = 0.8
+    discount: float = 0.97
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
     epochs: int = 150
     use_ucb: bool = True
     use_random: bool = True
+    use_vw: bool = True
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
-    l1_norm_weight: float = 0.#1e-6
+    l1_norm_weight: float = 1e-8
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
-    interrupt_range: float = 0.75
-    emb_dim: int = 128
+    interrupt_range: float = 0.6
+    emb_dim: int = 64
     alpha: float = 0.3
     vanilla: bool = True
 
@@ -881,6 +884,7 @@ if __name__ == "__main__":
         use_contrastive=hparams_.use_contrastive,
         use_ucb=hparams_.use_ucb,
         use_random=hparams_.use_random,
+        use_vw=hparams_.use_vw,
         poll_clients=poll_clients,
         discount_hparam=hparams_.discount,
         dataset_sizes=train_sizes,
