@@ -41,7 +41,7 @@ from non_iid_50 import get_non_iid_50
 # torch.backends.cudnn.benchmark = False
 #torch.backends.cudnn.enabled = False
 torch.manual_seed(123)
-# torch.autograd.set_detect_anomaly(True)
+torch.autograd.set_detect_anomaly(True)
 
 # from tqdm.notebook import
 
@@ -669,7 +669,7 @@ class hparam:
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
-    l1_norm_weight: float = 0.#1e-8
+    l1_norm_weight: float = 1e-6
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""

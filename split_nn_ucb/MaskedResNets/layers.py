@@ -34,11 +34,13 @@ class MaskedLinear(Module):
         self.num_masks = num_masks
         self.weight = Parameter(torch.empty(
             (out_features, in_features), **factory_kwargs))
-        self.weight_masks = Parameter(torch.ones_like(self.weight))
+        self.weight_masks = Parameter(torch.ones(
+            (self.num_masks, out_features, in_features), **factory_kwargs))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_features, **factory_kwargs))
-            self.bias_masks = Parameter(torch.ones_like(self.bias))
+            self.bias_masks = Parameter(torch.ones(
+                self.num_masks, out_features, **factory_kwargs))
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
@@ -155,15 +157,18 @@ class _ConvNd(nn.Module):
         if transposed:
             self.weight = Parameter(torch.empty(
                 (in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
-            self.weight_masks = Parameter(torch.ones_like(self.weight))
+            self.weight_masks = Parameter(torch.ones(
+                (self.num_masks, in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
         else:
             self.weight = Parameter(torch.empty(
                 (out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
-            self.weight_masks = Parameter(torch.ones_like(self.weight))
+            self.weight_masks = Parameter(torch.ones(
+                (self.num_masks, out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_channels, **factory_kwargs))
-            self.bias_masks = Parameter(torch.ones_like(self.bias))
+            self.bias_masks = Parameter(torch.ones(
+                self.num_masks, out_channels, **factory_kwargs))
         else:
             self.register_parameter('bias', None)
 
@@ -277,10 +282,12 @@ class _NormBase(Module):
         if self.affine:
             self.weight = Parameter(torch.empty(
                 num_features, **factory_kwargs))
-            self.weight_masks = Parameter(torch.ones_like(self.weight))
+            self.weight_masks = Parameter(torch.ones(
+                self.num_masks, num_features, **factory_kwargs))
             self.bias = Parameter(torch.empty(
                 num_features, **factory_kwargs))
-            self.bias_masks = Parameter(torch.ones_like(self.bias))
+            self.bias_masks = Parameter(torch.ones(
+                self.num_masks, num_features, **factory_kwargs))
         else:
             self.register_parameter("weight", None)
             self.register_parameter("bias", None)
