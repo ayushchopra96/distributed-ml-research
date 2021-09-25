@@ -138,7 +138,7 @@ def compute_comm_cost(tensor):
     if memo_key in comm_dict:
         return comm_dict[memo_key]
 
-    s = np.prod(tensor[torch.nonzero(tensor, as_tuple=True)].size()) * 4 * 1e-6
+    s = np.prod(tensor.size()) * 4 * 1e-6
     comm_dict[memo_key] = s
     return s
 
@@ -176,7 +176,7 @@ class SplitNN(nn.Module):
     def forward(self, inputs, i, out, flops):
         to_server, output = self.clients[f"alice{i}"](inputs)
         client_flops = compute_flops(self.clients[f"alice{i}"], (inputs,), "alice")
-        if not self.interrupted or out:
+        if out:
             if self.is_partitioned_or_masked:
                 output_final = self.bob[0](to_server, i)
                 flops += compute_flops(self.bob[0], (to_server, i), "bob")
@@ -658,18 +658,18 @@ class hparam:
     non_iid_50: bool = True
     num_clients: int = 10
     k: int = 3
-    discount: float = 0.97
+    discount: float = 0.85
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
-    epochs: int = 150
+    epochs: int = 100
     use_ucb: bool = True
     use_random: bool = True
     use_vw: bool = True
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
-    l1_norm_weight: float = 1e-8
+    l1_norm_weight: float = 0.#1e-8
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""

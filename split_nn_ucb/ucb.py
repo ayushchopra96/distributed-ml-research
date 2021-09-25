@@ -193,13 +193,15 @@ def BayesianAdvantage(
     round_counter = losses_mean.shape[0]
     mean = np.zeros(num_clients)
     std = np.zeros(num_clients)
-    counts = np.zeros(num_clients) + 1e-15
+    counts = client_selection_mask.sum(0) + 1e-15
+    discounted_counts = np.zeros(num_clients) + 1e-15
     for t in range(round_counter):
-        for c in range(num_clients):
-            mean[c] += (discount ** (round_counter - 1 - t)) * losses_mean[t][c]
-            std[c] += (discount ** (round_counter - 1 - t)) * losses_std[t][c]
-            counts[c] += (discount ** (round_counter - 1 - t)) * (client_selection_mask[t][c])
-    scores = mean + 2 * std / np.sqrt(counts)
+        mean += (discount ** (round_counter - 1 - t)) * losses_mean[t]
+        std += (discount ** (round_counter - 1 - t)) * losses_std[t]
+        discounted_counts += (discount ** (round_counter - 1 - t)) * (client_selection_mask[t])
+    # scores = mean / discounted_counts + 2 * std / np.sqrt(counts)
+    scores = mean / discounted_counts + np.sqrt(2 * np.log(round_counter) / counts) 
+    # print(np.argsort(mean), counts)
     return scores
 
 def BayesianAdvantageVec(
@@ -260,198 +262,195 @@ if __name__ == "__main__":
 
     p = dataset_fractions(dataset_sizes)
 
-    def _run_one(r, c, selected, selected_r, b):
+    def _run_one(r, c, selected, b):
         cum_reward = 0
-        cum_reward_r = 0
 
-        l = torch.rand((num_clients,)).uniform_((c) / (r+1), (c+1) / (r+1))
-        if selected_r:
-            cum_reward_r += l.mean().item()
         if selected:
+            l = torch.rand((num_clients,)).uniform_((c) / (r+1), (c+1) / (r+1))
             b.update_client(c, l.mean(), l.std(), selected)
             cum_reward += l.mean().item()
         else:
             # l = torch.rand((num_clients,)).uniform_((10 * c) / (r+1), 10 * (c+1) / (r+1))
             b.update_client(c, None, None, selected)
-        return cum_reward, cum_reward_r
+        return cum_reward
 
-    b_r = UniformRandom(
+    b = UniformRandom(
         num_clients,
         0.9,
         dataset_sizes,
         6
     )
     
-    # selected_ids = random.sample(list(range(num_clients)), 6)
-    # # print(Parallel(n_jobs=-1)(delayed(_run_one)(0, c, c in selected_ids, b) for c in range(num_clients)))
-    # random_rewards = []
-    # cum_reward = 0.
-    # for r in trange(num_rounds):
-    #     for _ in range(160):
-    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
-    #         b.end_round()
-    #         selected_ids = b.select_clients()
-
-    #         random_rewards.append(cum_reward)
-    
-    b = VWBandit(
-        num_clients,
-        0.9,
-        dataset_sizes,
-        6
-    )
-    
-    selected_ids = b.select_clients()
-    selected_ids_r = b_r.select_clients()
-    vw_rewards = []
+    selected_ids = random.sample(list(range(num_clients)), 6)
+    # print(Parallel(n_jobs=-1)(delayed(_run_one)(0, c, c in selected_ids, b) for c in range(num_clients)))
+    random_rewards = []
     cum_reward = 0.
-    cum_reward_r = 0.
     for r in trange(num_rounds):
         for _ in range(160):
-            out = Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, c in selected_ids_r, b) for c in range(num_clients))
-            cum_reward += sum([item[0] for item in out])
-            cum_reward_r += sum([item[1] for item in out])
-
+            cum_reward += sum([_run_one(r, c, c in selected_ids, b) for c in range(num_clients)])
             b.end_round()
-
             selected_ids = b.select_clients()
-            selected_ids_r = b_r.select_clients()
 
-            vw_rewards.append(cum_reward - cum_reward_r)
-
-    # b = BayesianUCB(
+            random_rewards.append(cum_reward)
+    
+    # b = VWBandit(
     #     num_clients,
     #     0.9,
     #     dataset_sizes,
     #     6
     # )
-    # selected_ids = random.sample(list(range(num_clients)), 6)
-    # ucb9_rewards = []
-    # cum_reward = 0.
-    # for r in trange(num_rounds):
-    #     for _ in range(160):
-    #         cum_reward += sum(Parallel(n_jobs=-1)(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
-    #         b.end_round()
-    #         selected_ids = b.select_clients()
-
-    #         ucb9_rewards.append(cum_reward)
-
-    # b = BayesianUCB(
-    #     num_clients,
-    #     0.8,
-    #     dataset_sizes,
-    #     6
-    # )
-    # selected_ids = random.sample(list(range(num_clients)), 6)
-    # ucb8_rewards = []
-    # cum_reward = 0.
-    # for r in trange(num_rounds):
-    #     for _ in range(160):
-    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
-    #         b.end_round()
-    #         selected_ids = b.select_clients()
-
-    #         ucb8_rewards.append(cum_reward)
-
-    # b = BayesianUCB(
-    #     num_clients,
-    #     0.6,
-    #     dataset_sizes,
-    #     6
-    # )
-    # selected_ids = random.sample(list(range(num_clients)), 6)
-    # ucb6_rewards = []
-    # cum_reward = 0.
-    # for r in trange(num_rounds):
-    #     for _ in range(160):
-    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
-    #         b.end_round()
-    #         selected_ids = b.select_clients()
-
-    #         ucb6_rewards.append(cum_reward)
-
-    # b = BayesianUCB(
-    #     num_clients,
-    #     0.5,
-    #     dataset_sizes,
-    #     6
-    # )
-    # selected_ids = random.sample(list(range(num_clients)), 6)
-    # ucb5_rewards = []
-    # cum_reward = 0.
-    # for r in trange(num_rounds):
-    #     for _ in range(160):
-    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
-    #         b.end_round()
-    #         selected_ids = b.select_clients()
-
-    #         ucb5_rewards.append(cum_reward)
-
-    # b = BayesianUCB(
-    #     num_clients,
-    #     0.4,
-    #     dataset_sizes,
-    #     6
-    # )
-    # selected_ids = random.sample(list(range(num_clients)), 6)
-    # ucb4_rewards = []
-    # cum_reward = 0.
-    # for r in trange(num_rounds):
-    #     for _ in range(160):
-    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
-    #         b.end_round()
-    #         selected_ids = b.select_clients()
-
-    #         ucb4_rewards.append(cum_reward)
-
-    # b = BayesianUCB(
-    #     num_clients,
-    #     0.95,
-    #     dataset_sizes,
-    #     6
-    # )
-    # selected_ids = random.sample(list(range(num_clients)), 6)
-    # ucb95_rewards = []
-    # cum_reward = 0.
-    # for r in trange(num_rounds):
-    #     for _ in range(160):
-    #         cum_reward += sum(Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, b) for c in range(num_clients)))
-    #         b.end_round()
-    #         selected_ids = b.select_clients()
-
-    #         ucb95_rewards.append(cum_reward)
-
-    # import plotly.graph_objects as go
-
-    # fig = go.Figure()
-    # fig = fig.add_trace(
-    #     go.Scatter(y=random_rewards, name='Uniform Random')
-    # )
-    # fig = fig.add_trace(
-    #     go.Scatter(y=ucb9_rewards, name='Bayesian UCB gamma=0.9')
-    # )
-    # fig = fig.add_trace(
-    #     go.Scatter(y=ucb8_rewards, name='Bayesian UCB gamma=0.8')
-    # )
-    # fig = fig.add_trace(
-    #     go.Scatter(y=ucb4_rewards, name='Bayesian UCB gamma=0.4')
-    # )
-    # fig = fig.add_trace(
-    #     go.Scatter(y=ucb5_rewards, name='Bayesian UCB gamma=0.5')
-    # )
-    # fig = fig.add_trace(
-    #     go.Scatter(y=ucb6_rewards, name='Bayesian UCB gamma=0.6')
-    # )
-    # fig = fig.add_trace(
-    #     go.Scatter(y=ucb95_rewards, name='Bayesian UCB gamma=0.95')
-    # )
-
-    # fig.show()
     
+    # selected_ids = b.select_clients()
+    # selected_ids_r = b_r.select_clients()
+    # vw_rewards = []
+    # cum_reward = 0.
+    # cum_reward_r = 0.
+    # for r in trange(num_rounds):
+    #     for _ in range(160):
+    #         out = Parallel(n_jobs=-1, require='sharedmem')(delayed(_run_one)(r, c, c in selected_ids, c in selected_ids_r, b) for c in range(num_clients))
+    #         cum_reward += sum([item[0] for item in out])
+    #         cum_reward_r += sum([item[1] for item in out])
+
+    #         b.end_round()
+
+    #         selected_ids = b.select_clients()
+    #         selected_ids_r = b_r.select_clients()
+
+    #         vw_rewards.append(cum_reward - cum_reward_r)
+
+    b = BayesianUCB(
+        num_clients,
+        0.9,
+        dataset_sizes,
+        6
+    )
+    selected_ids = random.sample(list(range(num_clients)), 6)
+    ucb9_rewards = []
+    cum_reward = 0.
+    for r in trange(num_rounds):
+        for _ in range(160):
+            cum_reward += sum([_run_one(r, c, c in selected_ids, b) for c in range(num_clients)])
+            b.end_round()
+            selected_ids = b.select_clients()
+
+            ucb9_rewards.append(cum_reward)
+
+    b = BayesianUCB(
+        num_clients,
+        0.8,
+        dataset_sizes,
+        6
+    )
+    selected_ids = random.sample(list(range(num_clients)), 6)
+    ucb8_rewards = []
+    cum_reward = 0.
+    for r in trange(num_rounds):
+        for _ in range(160):
+            cum_reward += sum([_run_one(r, c, c in selected_ids, b) for c in range(num_clients)])
+            b.end_round()
+            selected_ids = b.select_clients()
+
+            ucb8_rewards.append(cum_reward)
+
+    b = BayesianUCB(
+        num_clients,
+        0.6,
+        dataset_sizes,
+        6
+    )
+    selected_ids = random.sample(list(range(num_clients)), 6)
+    ucb6_rewards = []
+    cum_reward = 0.
+    for r in trange(num_rounds):
+        for _ in range(160):
+            cum_reward += sum([_run_one(r, c, c in selected_ids, b) for c in range(num_clients)])
+            b.end_round()
+            selected_ids = b.select_clients()
+
+            ucb6_rewards.append(cum_reward)
+
+    b = BayesianUCB(
+        num_clients,
+        0.5,
+        dataset_sizes,
+        6
+    )
+    selected_ids = random.sample(list(range(num_clients)), 6)
+    ucb5_rewards = []
+    cum_reward = 0.
+    for r in trange(num_rounds):
+        for _ in range(160):
+            cum_reward += sum([_run_one(r, c, c in selected_ids, b) for c in range(num_clients)])
+            b.end_round()
+            selected_ids = b.select_clients()
+
+            ucb5_rewards.append(cum_reward)
+
+    b = BayesianUCB(
+        num_clients,
+        0.4,
+        dataset_sizes,
+        6
+    )
+    selected_ids = random.sample(list(range(num_clients)), 6)
+    ucb4_rewards = []
+    cum_reward = 0.
+    for r in trange(num_rounds):
+        for _ in range(160):
+            cum_reward += sum([_run_one(r, c, c in selected_ids, b) for c in range(num_clients)])
+            b.end_round()
+            selected_ids = b.select_clients()
+
+            ucb4_rewards.append(cum_reward)
+
+    b = BayesianUCB(
+        num_clients,
+        0.95,
+        dataset_sizes,
+        6
+    )
+    selected_ids = random.sample(list(range(num_clients)), 6)
+    ucb95_rewards = []
+    cum_reward = 0.
+    for r in trange(num_rounds):
+        for _ in range(160):
+            cum_reward += sum([_run_one(r, c, c in selected_ids, b) for c in range(num_clients)])
+            b.end_round()
+            selected_ids = b.select_clients()
+
+            ucb95_rewards.append(cum_reward)
+
     import plotly.graph_objects as go
 
     fig = go.Figure()
     fig = fig.add_trace(
-        go.Scatter(y=vw_rewards, name='VowpalWabbit')
-    )    
+        go.Scatter(y=random_rewards, name='Uniform Random')
+    )
+    fig = fig.add_trace(
+        go.Scatter(y=ucb9_rewards, name='Bayesian UCB gamma=0.9')
+    )
+    fig = fig.add_trace(
+        go.Scatter(y=ucb8_rewards, name='Bayesian UCB gamma=0.8')
+    )
+    fig = fig.add_trace(
+        go.Scatter(y=ucb4_rewards, name='Bayesian UCB gamma=0.4')
+    )
+    fig = fig.add_trace(
+        go.Scatter(y=ucb5_rewards, name='Bayesian UCB gamma=0.5')
+    )
+    fig = fig.add_trace(
+        go.Scatter(y=ucb6_rewards, name='Bayesian UCB gamma=0.6')
+    )
+    fig = fig.add_trace(
+        go.Scatter(y=ucb95_rewards, name='Bayesian UCB gamma=0.95')
+    )
+
     fig.show()
+    
+    # import plotly.graph_objects as go
+
+    # fig = go.Figure()
+    # fig = fig.add_trace(
+    #     go.Scatter(y=vw_rewards, name='VowpalWabbit')
+    # )    
+    # fig.show()
