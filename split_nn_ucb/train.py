@@ -8,7 +8,6 @@ from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 import h5py
 from time import time
-from fvcore.nn import FlopCountAnalysis
 import random
 from tqdm import trange
 from torch.multiprocessing import Pool
@@ -34,9 +33,10 @@ from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet32 as masked_resnet32
 from MaskedResNets import MaskedResNet
-from functools import lru_cache
+from functools import lru_cache, partial
 from non_iid_50 import get_non_iid_50
 
+from utils import *
 # torch.backends.cudnn.deterministic = True
 # torch.backends.cudnn.benchmark = False
 #torch.backends.cudnn.enabled = False
@@ -110,37 +110,6 @@ class Server(nn.Module):
         self.server_model.eval()
 
 
-flops_dict = {}
-# @torch.no_grad()
-
-
-def compute_flops(model, args, alice_or_bob):
-    if len(args) == 2:
-        inputs, i = args
-    else:
-        inputs, = args
-
-    memo_key = (alice_or_bob, str(list(inputs.shape)))
-    if memo_key in flops_dict:
-        return flops_dict[memo_key]
-
-    f = FlopCountAnalysis(model, inputs=args).unsupported_ops_warnings(
-        False).uncalled_modules_warnings(False).total()
-    flops_dict[memo_key] = f
-    return f
-
-
-comm_dict = {}
-
-
-def compute_comm_cost(tensor):
-    memo_key = str(list(tensor.shape))
-    if memo_key in comm_dict:
-        return comm_dict[memo_key]
-
-    s = np.prod(tensor.size()) * 4 * 1e-6
-    comm_dict[memo_key] = s
-    return s
 
 
 class SplitNN(nn.Module):
@@ -285,8 +254,9 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
         T_max = 160
     
     alice_models = []
+    client_model_fn = partial(resnet32, hooked=True, num_classes=num_classes, emb_dim=emb_dim)
     for i in range(num_clients):
-        model_a = resnet32(hooked=True, num_classes=num_classes, emb_dim=emb_dim)
+        model_a = client_model_fn()
         alice_models.append(model_a)
 
     opt_list_alice = []
@@ -337,7 +307,7 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
         avg=avg,
     )
 
-    return split_model
+    return split_model, client_model_fn
 
 
 class AverageMeter(object):
@@ -382,6 +352,8 @@ def experiment_ucb(
     train_loader_list,
     contrastive_list,
     test_loader,
+    avg_clients,
+    model_fn,
     interrupt_range,
     epochs,
     k,
@@ -396,10 +368,8 @@ def experiment_ucb(
     steps=None,
     num_clients=100,
 ):
-    # main_loss = pml_losses.TupletMarginLoss()
-    # var_loss = pml_losses.IntraPairVarianceLoss()
-    # contrastive_loss = pml_losses.MultipleLosses([main_loss, var_loss], weights=[1, 0.5])
-    contrastive_loss = pml_losses.SupConLoss(temperature=0.1)
+
+    contrastive_loss = pml_losses.SupConLoss()
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -437,6 +407,7 @@ def experiment_ucb(
     # split_nn = nn.DataParallel(split_nn, output_device=device_1)
     # split_nn.module.cuda()
 
+    model_averager = ModelAverager(model_fn)
     interrupted_nn = nn.DataParallel(interrupted_nn, output_device=device_2)
     interrupted_nn.module.cuda()
     if isinstance(train_loader_list, dict):
@@ -534,6 +505,7 @@ def experiment_ucb(
         cl_meter.reset()
         intermediate_ce_meter.reset()
 
+
         for i in range(num_clients):
             train_loader_list[i].shuffle()
             if use_contrastive:
@@ -576,6 +548,10 @@ def experiment_ucb(
                     oit = True
                     interrupted_nn.module.scheduler_step(
                         i, accs_final, out=oit, step_bob=False)
+
+            if avg_clients:
+                comm_interrupted += model_averager.average(interrupted_nn.module)
+
 
         acc_interrupted_list.append(accs_final)
         acc_split_list.append(0.)
@@ -677,6 +653,7 @@ class hparam:
     emb_dim: int = 64
     alpha: float = 0.3
     vanilla: bool = True
+    avg_clients: bool = True
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -858,8 +835,8 @@ if __name__ == "__main__":
         emb_dim = None
     # split_nn = get_model(num_clients=num_clients,
     #                      interrupted=False, cifar=cifar)
-    interrupted_nn = get_model(
-        num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar, emb_dim=emb_dim, non_iid_50=hparams_.non_iid_50)
+    interrupted_nn, model_fn = get_model(num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar, emb_dim=emb_dim, non_iid_50=hparams_.non_iid_50)
+
     print("Average Train set size per client: ", train_sizes.mean().item())
     (
         acc_split_list,
@@ -880,6 +857,8 @@ if __name__ == "__main__":
         cifar_train_loader_list,
         contrastive_dataset_list,
         cifar_test_loader_list,
+        avg_clients=hparams_.avg_clients,
+        model_fn=model_fn,
         k=hparams_.k,
         use_contrastive=hparams_.use_contrastive,
         use_ucb=hparams_.use_ucb,
