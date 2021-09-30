@@ -2,7 +2,7 @@ from argparse import ArgumentParser
 from dataclasses import dataclass
 
 from fvcore.nn.flop_count import flop_count
-from models_cifar import resnet32, test
+from models_cifar import resnet32, LeNet
 from ucb import UniformRandom, BayesianUCB, VWBandit
 from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
@@ -32,7 +32,7 @@ from torch.autograd import Variable
 from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet32 as masked_resnet32
-from MaskedResNets import MaskedResNet
+from MaskedResNets import MaskedResNet, MaskedLeNet
 from functools import lru_cache, partial
 from non_iid_50 import get_non_iid_50
 
@@ -135,7 +135,7 @@ class SplitNN(nn.Module):
         self.bob = nn.ModuleList([Server(server_model=server)])
         self.opt_bob = server_opt
         self.is_partitioned_or_masked = isinstance(
-            server, PartitionedResNet) or isinstance(server, MaskedResNet)
+            server, PartitionedResNet) or isinstance(server, MaskedResNet) or isinstance(server, MaskedLeNet)
         self.to_server = None
         self.interrupted = interrupted
         self.scheduler_list_alice = scheduler_list_alice
@@ -226,35 +226,51 @@ class SplitNN(nn.Module):
             output, output_final, f, fc = self.forward(
                 images, i, out=True, flops=0)
             _, predicted_m1 = torch.max(output_final.data, 1)
-            r, predicted_m2 = torch.max(output.data, 1)
+            # r, predicted_m2 = torch.max(output.data, 1)
 
             total += labels.size(0)
             correct_m1 += (predicted_m1 == labels).sum()
-            correct_m2 += (predicted_m2 == labels).sum()
+            # correct_m2 += (predicted_m2 == labels).sum()
 
         # accuracy of bob with ith alice
         accuracy_m1 = float(correct_m1) / total
-        accuracy_m2 = float(correct_m2) / total  # accuracy of ith alice
+        # accuracy_m2 = float(correct_m2) / total  # accuracy of ith alice
 
         # print('Accuracy Model 1: %f %%' % (100 * accuracy_m1))
         # print('Accuracy Model 2: %f %%' % (100 * accuracy_m2))
 
-        return accuracy_m1, accuracy_m2
+        return accuracy_m1, None
 
 
-def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=False, avg=False, cifar=True, emb_dim=None, non_iid_50=False):
+def get_model(
+    num_clients=100, 
+    num_partitions=1, 
+    use_masked=False, 
+    interrupted=False, 
+    avg=False, 
+    cifar=True, 
+    emb_dim=None, 
+    non_iid_50=False,
+    use_lenet=False,
+    use_head=True
+):
     assert(not (num_partitions > 1 and use_masked))
     if cifar:
         num_classes = 10
         option = 'A'
-        T_max = 160
+        T_max = 22
     elif non_iid_50:
         num_classes = 5
         option = 'A'
-        T_max = 160
+        T_max = 22
     
     alice_models = []
-    client_model_fn = partial(resnet32, hooked=True, num_classes=num_classes, emb_dim=emb_dim)
+    if use_lenet:
+        print("Using LeNet for Alice")
+        client_model_fn = partial(LeNet, hooked=True, num_classes=num_classes, emb_dim=emb_dim, use_head=use_head)
+    else:
+        print("Using ResNet for Alice")
+        client_model_fn = partial(resnet32, hooked=True, num_classes=num_classes, emb_dim=emb_dim)
     for i in range(num_clients):
         model_a = client_model_fn()
         alice_models.append(model_a)
@@ -278,10 +294,21 @@ def get_model(num_clients=100, num_partitions=1, use_masked=False, interrupted=F
             num_partitions=num_partitions, num_clients=num_clients, hooked=False, num_classes=num_classes)
     elif use_masked:
         print("Using Masked")
-        model_bob = masked_resnet32(
-            num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
+        if use_lenet:
+            print("Using LeNet for Bob")
+            model_bob = MaskedLeNet(
+                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
+        else:
+            print("Using ResNet for Bob")
+            model_bob = masked_resnet32(
+                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
     else:
-        model_bob = resnet32(hooked=False, num_classes=num_classes)
+        if use_lenet:
+            print("Using LeNet for Bob")
+            model_bob = LeNet(hooked=False, num_classes=num_classes)
+        else:
+            print("Using ResNet for Bob")
+            model_bob = resnet32(hooked=False, num_classes=num_classes)
     opt_bob = optim.Adam(model_bob.parameters(), lr=1e-3, weight_decay=1e-4)
     # shared = []
     # client_specific = []
@@ -361,6 +388,7 @@ def experiment_ucb(
     use_random,
     use_vw,
     use_contrastive,
+    use_head,
     discount_hparam,
     dataset_sizes,
     poll_clients,
@@ -369,7 +397,10 @@ def experiment_ucb(
     num_clients=100,
 ):
 
-    contrastive_loss = pml_losses.SupConLoss()
+    if use_head:
+        contrastive_loss = pml_losses.NTXentLoss()
+    else:
+        contrastive_loss = pml_losses.MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -441,8 +472,10 @@ def experiment_ucb(
                     )
                     flops_split_client += (flops_interrupted - before_flops)
                     if use_contrastive:
-                        emb = intermediate_output.reshape(b, -1)
-                        # emb = x_next.reshape(b, -1)
+                        if use_head:
+                            emb = intermediate_output.reshape(b, -1)
+                        else:
+                            emb = x_next.reshape(b, -1)
                         loss2 = contrastive_loss(emb, y)
                         cl_meter.update(loss2.cpu().detach().mean().item())
                     else:
@@ -523,9 +556,9 @@ def experiment_ucb(
                 loader, i
             )
             accs_final.append(acc_interrupted)
-            accs_alice.append(alice_interrupted)
+            # accs_alice.append(alice_interrupted)
         accs_final = np.mean(accs_final)
-        accs_alice = np.mean(accs_alice)
+        # accs_alice = np.mean(accs_alice)
 
         # trigger scheduler bob after a warmup of 10 epochs
         if ep > 10:
@@ -634,7 +667,7 @@ class hparam:
     non_iid_50: bool = True
     num_clients: int = 10
     k: int = 3
-    discount: float = 0.85
+    discount: float = 0.95
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
@@ -649,11 +682,13 @@ class hparam:
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
-    interrupt_range: float = 0.75
+    interrupt_range: float = 0.6
     emb_dim: int = 64
     alpha: float = 0.3
     vanilla: bool = True
     avg_clients: bool = True
+    use_lenet: bool = True
+    use_head: bool = True
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -835,7 +870,17 @@ if __name__ == "__main__":
         emb_dim = None
     # split_nn = get_model(num_clients=num_clients,
     #                      interrupted=False, cifar=cifar)
-    interrupted_nn, model_fn = get_model(num_clients=num_clients, num_partitions=hparams_.num_partitions, use_masked=hparams_.use_masked, interrupted=interrupted, cifar=cifar, emb_dim=emb_dim, non_iid_50=hparams_.non_iid_50)
+    interrupted_nn, model_fn = get_model(
+        num_clients=num_clients, 
+        num_partitions=hparams_.num_partitions, 
+        use_masked=hparams_.use_masked, 
+        interrupted=interrupted, 
+        cifar=cifar, 
+        emb_dim=emb_dim, 
+        non_iid_50=hparams_.non_iid_50, 
+        use_lenet=hparams_.use_lenet, 
+        use_head=hparams_.use_head
+    )
 
     print("Average Train set size per client: ", train_sizes.mean().item())
     (
@@ -861,6 +906,7 @@ if __name__ == "__main__":
         model_fn=model_fn,
         k=hparams_.k,
         use_contrastive=hparams_.use_contrastive,
+        use_head=hparams_.use_head,
         use_ucb=hparams_.use_ucb,
         use_random=hparams_.use_random,
         use_vw=hparams_.use_vw,

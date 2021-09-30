@@ -1,21 +1,24 @@
+from numba.core.types.functions import argsnkwargs_to_str
 import os
 import multiprocessing as mp
 
 NUM_GPUS = 1
-JOBS_PER_GPU = 5
+JOBS_PER_GPU = 3
 
-cesl_args = " --interrupted --use_ucb --use_masked --use_contrastive "
-cesl_random_args = " --interrupted --use_random --use_masked --use_contrastive "
-vanilla_args = " --alpha 0.0 --vanilla "
+cesl_args = " --interrupted --use_ucb --use_masked --use_contrastive --epochs 20 --use_lenet --use_head "
+cesl_random_args = " --interrupted --use_random --use_masked --use_contrastive --epochs 20 --use_lenet --use_head "
+vanilla_args = " --vanilla "
 
-def run_command(command):
-    os.system(command)
+def run_command(args):
+    i, command = args
+    gpu_id = i % NUM_GPUS
+    os.system(f"CUDA_VISIBLE_DEVICES={gpu_id} {command}")
 
 # Interrupt Range Ablation
 def make_command_interrupt_range(args):
     job_id, interrupt_range = args
     command = f'''CUDA_VISIBLE_DEVICES={job_id % NUM_GPUS} python3 train.py --cifar --num_clients 10 --k 6 --experiment_name interrupt_range_iid_expt_{interrupt_range} --interrupt_range {interrupt_range} '''
-    command += " --interrupted --use_masked --use_contrastive --use_ucb "
+    command += " --interrupted --use_masked --use_contrastive --use_ucb --epochs 20"
     os.system(command)
     
 
@@ -38,29 +41,36 @@ def make_command_niid_50(random_or_not, vanilla_or_not, num_clients, k, masked=F
             name = f"CESL-{k}-{num_clients}"
             extra += cesl_args
     if masked: 
-        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {num_clients} --experiment_name non_iid_50_Only-Masked --l1_norm_weight 1e-4 --epochs 150 --use_masked ''' 
+        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {num_clients} --experiment_name non_iid_50_Only-Masked --l1_norm_weight 1e-3 --epochs 20 --use_masked --use_lenet ''' 
     else:        
-        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {k} --experiment_name non_iid_50_{name} --l1_norm_weight 1e-4 --epochs 150 ''' 
+        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {k} --experiment_name non_iid_50_{name} --l1_norm_weight 5e-4 ''' 
         command += extra
     return command
 
 niid_commands = [
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=10),
+    # Random
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6),
     make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=3),
     # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=50, k=30),
-    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=50, k=30),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10),
+    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=50, k=15),
+    # No Client Selection
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=50),
+    # Bandit
     make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=3),
     make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10, masked=True),
     # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=30),
     # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=15),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
+    # Vanilla
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
     # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=50, k=50),
+    # Only Masked
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10, masked=True),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=50, masked=True),
 ]
 
-with mp.Pool(1) as p:
-    p.map(run_command, niid_commands)
+with mp.Pool(JOBS_PER_GPU * NUM_GPUS) as p:
+    p.map(run_command, enumerate(niid_commands))
 
 
 # # Cifar10 expts

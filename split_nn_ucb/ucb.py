@@ -200,7 +200,7 @@ def BayesianAdvantage(
         std += (discount ** (round_counter - 1 - t)) * losses_std[t]
         discounted_counts += (discount ** (round_counter - 1 - t)) * (client_selection_mask[t])
     # scores = mean / discounted_counts + 2 * std / np.sqrt(counts)
-    scores = mean / discounted_counts + np.sqrt(2 * np.log(round_counter) / counts) 
+    scores = mean / discounted_counts + np.sqrt(2 * np.log(round_counter) / discounted_counts) 
     # print(np.argsort(mean), counts)
     return scores
 

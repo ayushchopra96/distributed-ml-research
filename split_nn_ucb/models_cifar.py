@@ -87,6 +87,7 @@ class ResNet(nn.Module):
     def __init__(self, block, num_blocks, num_classes=10, hooked=False, option='A', num_layers=1, emb_dim=None):
         super(ResNet, self).__init__()
         self.in_planes = 16
+        self.num_layers = num_layers
         self.hooked = hooked
         if self.hooked:
             self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
@@ -134,8 +135,8 @@ class ResNet(nn.Module):
             return layer1_out, out
 
 
-def resnet18(hooked=False, option='A', num_classes=10):
-    return ResNet(BasicBlock, [2, 2, 2], hooked=hooked, option=option, num_classes=num_classes)
+def resnet18(hooked=False, option='A', num_classes=10, emb_dim=None, num_layers=1):
+    return ResNet(BasicBlock, [2, 2, 2], hooked=hooked, option=option, num_classes=num_classes, num_layers=num_layers, emb_dim=emb_dim)
 
 
 def resnet32(hooked=False, option='A', num_classes=10, emb_dim=None, num_layers=1):
@@ -157,6 +158,67 @@ def resnet110(hooked=False, option='A', num_classes=10):
 def resnet1202():
     return ResNet(BasicBlock, [200, 200, 200])
 
+import torch.nn as nn
+import torch.nn.functional as F
+import functools
+import operator
+
+class Conv2dSamePadding(nn.Conv2d):
+    def __init__(self,*args,**kwargs):
+        super(Conv2dSamePadding, self).__init__(*args, **kwargs)
+        self.zero_pad_2d = nn.ZeroPad2d(functools.reduce(operator.__add__,
+                  [(k // 2 + (k - 2 * (k // 2)) - 1, k // 2) for k in self.kernel_size[::-1]]))
+
+    def forward(self, input):
+        return  self._conv_forward(self.zero_pad_2d(input), self.weight, self.bias)
+
+class LeNet(nn.Module):
+    def __init__(self, num_classes, hooked, use_head=True, emb_dim=None):
+        super(LeNet, self).__init__()
+        self.hooked = hooked
+        self.use_head = use_head
+        if self.hooked:
+            self.conv1 = nn.Sequential(
+                Conv2dSamePadding(3, 20, 5, stride=1),
+                nn.ReLU(inplace=True),
+                nn.LocalResponseNorm(size=4, alpha=0.001/9.0, beta=0.75, k=1.0),
+                nn.MaxPool2d((3, 3), (2, 2), padding=1)
+            )
+            if self.use_head:
+                self.conv_hook = nn.Conv2d(20, 128, kernel_size=1, bias=False)
+                self.head = nn.Linear(128, num_classes if emb_dim is None else emb_dim)
+        else:
+            self.conv2 = nn.Sequential(
+                Conv2dSamePadding(20, 50, 5, stride=1),
+                nn.ReLU(inplace=True),
+                nn.LocalResponseNorm(size=4, alpha=0.001/9.0, beta=0.75, k=1.0),
+                nn.MaxPool2d(3, 2, padding=1)
+            )
+            self.fc1   = nn.Linear(3200, 800)
+            self.fc2   = nn.Linear(800, 500)
+            self.fc3   = nn.Linear(500, num_classes)
+
+    def forward(self, x):
+        if self.hooked:
+            layer1_out = self.conv1(x)
+            if self.use_head:
+                emb = self.conv_hook(layer1_out)
+                size = emb.size(3)
+                if not isinstance(size, int):
+                    size = size.item()
+                emb = F.max_pool2d(emb, size).reshape(emb.shape[0], -1)
+                emb = self.head(emb)
+                return layer1_out, emb
+            else:
+                return layer1_out, None
+        else:
+            out = self.conv2(x)
+            out = out.view(out.shape[0], -1)
+            out = F.relu(self.fc1(out))
+            out = F.relu(self.fc2(out))
+            out = self.fc3(out)
+            return out
+
 
 def test(net):
     import numpy as np
@@ -169,8 +231,13 @@ def test(net):
 
 
 if __name__ == "__main__":
-    for net_name in __all__:
-        if net_name.startswith('resnet'):
-            print(net_name)
-            test(globals()[net_name]())
-            print()
+    net1 = LeNet(10, True, emb_dim=128, use_head=False)
+    inp = torch.randn(32, 3, 32, 32)
+    feat_next, emb = net1(inp)
+    print(feat_next.shape, emb)
+
+    net2 = LeNet(10, False, 128)
+    inp = torch.randn(*feat_next.shape)
+    out2 = net2(inp)
+    print(out2.shape)
+    
