@@ -38,6 +38,7 @@ def write_file(filepath, filename, data):
 
 def np_load(path):
     loaded = np.load(path, allow_pickle=True)
+    # loaded = np.memmap(path, mode='r')
     return loaded
 
 def load_task(base_dir, task):

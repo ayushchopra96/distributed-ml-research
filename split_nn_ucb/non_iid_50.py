@@ -45,9 +45,8 @@ class DataLoader:
         files = os.listdir(self.args.base_dir)
         files = ["_".join(f.replace(".npy", "").split("_")[:-1])
                  for f in files]
-        files = sorted(list(set(files)))
-        idx = [28, 30, 38, 45, 10, 20, 48, 23, 32, 33, 19, 18, 29, 42, 22, 16, 49, 8, 14, 24, 9, 26, 35, 31, 3, 40, 1, 21, 13, 4, 44, 6, 2, 43, 25, 37, 12, 27, 0, 11, 46, 36, 41, 7, 34, 17, 15, 39, 5, 47]
-        files = [files[i] for i in idx]
+        files = ['cifar100_0', 'cifar10_0', 'fashion_mnist_0', 'mnist_0', 'not_mnist_0', 'svhn_0', 'face_scrub_0', 'traffic_sign_0', 'cifar100_1', 'cifar10_1', 'fashion_mnist_1', 'mnist_1', 'not_mnist_1', 'svhn_1', 'face_scrub_1', 'traffic_sign_1']
+        assert(self.args.num_clients <= len(files))
         self.task_set = {
             k: [v] for k, v in enumerate(files[:self.args.num_clients])
         }

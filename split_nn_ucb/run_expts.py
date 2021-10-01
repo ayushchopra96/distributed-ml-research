@@ -1,13 +1,12 @@
-from numba.core.types.functions import argsnkwargs_to_str
 import os
 import multiprocessing as mp
 
 NUM_GPUS = 1
-JOBS_PER_GPU = 3
+JOBS_PER_GPU = 2
 
-cesl_args = " --interrupted --use_ucb --use_masked --use_contrastive --epochs 20 --use_lenet --use_head "
-cesl_random_args = " --interrupted --use_random --use_masked --use_contrastive --epochs 20 --use_lenet --use_head "
-vanilla_args = " --vanilla "
+cesl_args = " --interrupted --use_ucb --use_masked --use_additive --use_contrastive --epochs 20 --use_lenet --use_head "
+cesl_random_args = " --interrupted --use_random --use_masked --use_additive --use_contrastive --epochs 20 --use_lenet --use_head "
+vanilla_args = " --vanilla --epochs "
 
 def run_command(args):
     i, command = args
@@ -41,32 +40,30 @@ def make_command_niid_50(random_or_not, vanilla_or_not, num_clients, k, masked=F
             name = f"CESL-{k}-{num_clients}"
             extra += cesl_args
     if masked: 
-        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {num_clients} --experiment_name non_iid_50_Only-Masked --l1_norm_weight 1e-3 --epochs 20 --use_masked --use_lenet ''' 
+        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {num_clients} --experiment_name non_iid_50_Only-Masked --l1_norm_weight 1e-3 --epochs 20 --use_masked --use_additive --use_lenet ''' 
     else:        
-        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {k} --experiment_name non_iid_50_{name} --l1_norm_weight 5e-4 ''' 
+        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {k} --experiment_name non_iid_50_{name} --l1_norm_weight 1e-3 --use_lenet ''' 
         command += extra
     return command
 
 niid_commands = [
     # Random
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6),
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=3),
-    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=50, k=30),
-    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=50, k=15),
+    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=3),
+    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3),
     # No Client Selection
     # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=50),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5),
     # Bandit
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=3),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=30),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=15),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=3),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3),
     # Vanilla
     # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=50, k=50),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5),
     # Only Masked
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10, masked=True),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=50, k=50, masked=True),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10, masked=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True),
 ]
 
 with mp.Pool(JOBS_PER_GPU * NUM_GPUS) as p:
@@ -80,7 +77,7 @@ def make_command_cifar(random_or_not, vanilla_or_not, num_clients, k, iid_or_not
     #    extra_args += " --num_groups "
     if vanilla_or_not is None:
         name = f"CESL-no-bandit-{num_clients}-{num_clients}"
-        extra_args += " --interrupted --use_masked --use_contrastive --interrupt_range 0.3 "
+        extra_args += " --interrupted --use_masked --use_additive --use_contrastive --interrupt_range 0.3 --epochs 20 "
     elif vanilla_or_not == True:
         name = f"Vanilla-{num_clients}-{num_clients}"
         extra_args += " --vanilla "
@@ -97,6 +94,8 @@ def make_command_cifar(random_or_not, vanilla_or_not, num_clients, k, iid_or_not
     if not iid_or_not:
         extra_args += " --classwise_subset"
         name = "NIID-" + name
+    else:
+        name = "IID-" + name
     command = f'''python3 train.py --cifar --num_clients {num_clients} --k {k} --experiment_name cifar_{name} ''' 
     command += extra_args
     return command
@@ -111,12 +110,13 @@ niid_cifar_commands = [
     # make_command_cifar(iid_or_not=False, random_or_not=False, vanilla_or_not=False, num_clients=10, k=3),
     # make_command_cifar(iid_or_not=False, random_or_not=False, vanilla_or_not=False, num_clients=100, k=30),
     # make_command_cifar(iid_or_not=False, random_or_not=False, vanilla_or_not=False, num_clients=100, k=60),
-    make_command_cifar(iid_or_not=False, random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
+    # make_command_cifar(iid_or_not=False, random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
     # make_command_cifar(iid_or_not=False, random_or_not=False, vanilla_or_not=True, num_clients=100, k=100),
+    make_command_cifar(iid_or_not=False, random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
 ]
 
 # with mp.Pool(3) as p:
-#     p.map(run_command, niid_cifar_commands)
+#     p.map(run_command, enumerate(niid_cifar_commands))
 
 iid_cifar_commands = [
     # IID Cifar
@@ -128,10 +128,11 @@ iid_cifar_commands = [
     # make_command_cifar(iid_or_not=True, random_or_not=False, vanilla_or_not=False, num_clients=10, k=3),
     # make_command_cifar(iid_or_not=True, random_or_not=False, vanilla_or_not=False, num_clients=100, k=30),
     # make_command_cifar(iid_or_not=True, random_or_not=False, vanilla_or_not=False, num_clients=100, k=60),
-    # make_command_cifar(iid_or_not=True, random_or_not=False, vanilla_or_not=True, num_clients=10, k=6),
+    # make_command_cifar(iid_or_not=True, random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
     make_command_cifar(iid_or_not=True, random_or_not=False, vanilla_or_not=None, num_clients=10, k=10),
     # make_command_cifar(iid_or_not=True, random_or_not=False, vanilla_or_not=True, num_clients=100, k=30),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10),
 ]
 
-# with mp.Pool(5) as p:
-#     p.map(run_command, iid_cifar_commands)
+# with mp.Pool(3) as p:
+#     p.map(run_command, enumerate(iid_cifar_commands))

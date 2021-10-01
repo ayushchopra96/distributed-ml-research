@@ -252,7 +252,8 @@ def get_model(
     emb_dim=None, 
     non_iid_50=False,
     use_lenet=False,
-    use_head=True
+    use_head=True,
+    use_additive=True
 ):
     assert(not (num_partitions > 1 and use_masked))
     if cifar:
@@ -282,7 +283,7 @@ def get_model(
         alice.train()
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-            optim.Adam(alice.parameters(), lr=1e-3, weight_decay=1e-4)
+            optim.Adam(alice.parameters(), lr=1e-3 / 3 / 4, weight_decay=1e-4)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
@@ -297,11 +298,11 @@ def get_model(
         if use_lenet:
             print("Using LeNet for Bob")
             model_bob = MaskedLeNet(
-                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
+                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes, use_additive=use_additive)
         else:
             print("Using ResNet for Bob")
             model_bob = masked_resnet32(
-                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes)
+                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes, use_additive=use_additive)
     else:
         if use_lenet:
             print("Using LeNet for Bob")
@@ -309,7 +310,7 @@ def get_model(
         else:
             print("Using ResNet for Bob")
             model_bob = resnet32(hooked=False, num_classes=num_classes)
-    opt_bob = optim.Adam(model_bob.parameters(), lr=1e-3, weight_decay=1e-4)
+    opt_bob = optim.Adam(model_bob.parameters(), lr=1e-3 / 3 / 4, weight_decay=1e-4)
     # shared = []
     # client_specific = []
     # for pname, p in model_bob.named_parameters():
@@ -397,10 +398,8 @@ def experiment_ucb(
     num_clients=100,
 ):
 
-    if use_head:
-        contrastive_loss = pml_losses.NTXentLoss()
-    else:
-        contrastive_loss = pml_losses.MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
+    contrastive_loss = pml_losses.MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
+
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -448,6 +447,8 @@ def experiment_ucb(
     
     selected_ids = random.sample(list(range(num_clients)), k)
     for ep in t:  # 200
+        if avg_clients and (ep + 1) % 3 == 0 and ep < epochs - 3:
+            comm_interrupted += model_averager.average(interrupted_nn.module)
         batch_iter = trange(num_batches)
         for b in batch_iter:
             for i in range(num_clients):  # 100
@@ -582,10 +583,6 @@ def experiment_ucb(
                     interrupted_nn.module.scheduler_step(
                         i, accs_final, out=oit, step_bob=False)
 
-            if avg_clients:
-                comm_interrupted += model_averager.average(interrupted_nn.module)
-
-
         acc_interrupted_list.append(accs_final)
         acc_split_list.append(0.)
         steps_list.append(steps)
@@ -671,18 +668,19 @@ class hparam:
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
-    epochs: int = 100
+    epochs: int = 20
     use_ucb: bool = True
     use_random: bool = True
     use_vw: bool = True
     use_contrastive: bool = True
     num_partitions: int = 1
     use_masked: bool = False
-    l1_norm_weight: float = 1e-6
+    use_additive: bool = False
+    l1_norm_weight: float = 1e-3
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
-    interrupt_range: float = 0.6
+    interrupt_range: float = 0.7
     emb_dim: int = 64
     alpha: float = 0.3
     vanilla: bool = True
@@ -879,7 +877,8 @@ if __name__ == "__main__":
         emb_dim=emb_dim, 
         non_iid_50=hparams_.non_iid_50, 
         use_lenet=hparams_.use_lenet, 
-        use_head=hparams_.use_head
+        use_head=hparams_.use_head,
+        use_additive=hparams_.use_additive
     )
 
     print("Average Train set size per client: ", train_sizes.mean().item())
