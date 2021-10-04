@@ -34,7 +34,7 @@ from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet32 as masked_resnet32
 from MaskedResNets import MaskedResNet, MaskedLeNet
 from functools import lru_cache, partial
-from non_iid_50 import get_non_iid_50
+from non_iid_50 import get_non_iid_50_v1, get_non_iid_50_v2
 
 from utils import *
 # torch.backends.cudnn.deterministic = True
@@ -63,12 +63,13 @@ class Client(nn.Module):
         self.client_model = client_model
         self.grad_from_server = None
         self.client_intermediate = None
+        self.client_emb = None
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        self.client_intermediate, output = self.client_model(inputs)
+        self.client_intermediate, self.client_emb = self.client_model(inputs)
         to_server = self.client_intermediate.detach().requires_grad_()
 
-        return to_server, output
+        return to_server, self.client_emb
 
     def client_backward(self, grad_from_server=None):
         if grad_from_server != None:
@@ -146,14 +147,17 @@ class SplitNN(nn.Module):
         to_server, output = self.clients[f"alice{i}"](inputs)
         client_flops = compute_flops(self.clients[f"alice{i}"], (inputs,), "alice")
         if out:
+            send_server_cost = compute_comm_cost(to_server)
+            if output is None:
+                output = to_server
             if self.is_partitioned_or_masked:
                 output_final = self.bob[0](to_server, i)
                 flops += compute_flops(self.bob[0], (to_server, i), "bob")
-                return output, output_final, flops + client_flops, client_flops
+                return output, output_final, flops + client_flops, client_flops, send_server_cost
             else:
                 output_final = self.bob[0](to_server)
                 flops += compute_flops(self.bob[0], (to_server,), "bob")
-                return output, output_final, flops + client_flops, client_flops
+                return output, output_final, flops + client_flops, client_flops, send_server_cost
         else:
             return output, to_server, flops + client_flops
 
@@ -223,7 +227,7 @@ class SplitNN(nn.Module):
                 images = images.to(device)
                 labels = labels.to(device)
 
-            output, output_final, f, fc = self.forward(
+            output, output_final, f, fc, cost = self.forward(
                 images, i, out=True, flops=0)
             _, predicted_m1 = torch.max(output_final.data, 1)
             # r, predicted_m2 = torch.max(output.data, 1)
@@ -242,36 +246,25 @@ class SplitNN(nn.Module):
         return accuracy_m1, None
 
 
-def get_model(
-    num_clients=100, 
-    num_partitions=1, 
-    use_masked=False, 
-    interrupted=False, 
-    avg=False, 
-    cifar=True, 
-    emb_dim=None, 
-    non_iid_50=False,
-    use_lenet=False,
-    use_head=True,
-    use_additive=True
-):
-    assert(not (num_partitions > 1 and use_masked))
-    if cifar:
+def get_model(args):
+    assert(not (args.num_partitions > 1 and args.use_masked))
+    if args.cifar:
         num_classes = 10
-        option = 'A'
         T_max = 22
-    elif non_iid_50:
+    if args.non_iid_50_v1:
         num_classes = 5
-        option = 'A'
+        T_max = 22
+    if args.non_iid_50_v2:
+        num_classes = 500
         T_max = 22
     
     alice_models = []
-    if use_lenet:
+    if args.use_lenet:
         print("Using LeNet for Alice")
-        client_model_fn = partial(LeNet, hooked=True, num_classes=num_classes, emb_dim=emb_dim, use_head=use_head)
+        client_model_fn = partial(LeNet, hooked=True, num_classes=num_classes, emb_dim=args.emb_dim, use_head=args.use_head)
     else:
         print("Using ResNet for Alice")
-        client_model_fn = partial(resnet32, hooked=True, num_classes=num_classes, emb_dim=emb_dim)
+        client_model_fn = partial(resnet32, hooked=True, num_classes=num_classes, emb_dim=args.emb_dim)
     for i in range(num_clients):
         model_a = client_model_fn()
         alice_models.append(model_a)
@@ -283,34 +276,34 @@ def get_model(
         alice.train()
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-            optim.Adam(alice.parameters(), lr=1e-3 / 3 / 4, weight_decay=1e-4)
+            optim.Adam(alice.parameters(), lr=1e-3 / 3 / 3, weight_decay=1e-4)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
             #             ReduceLROnPlateau(opt_list_alice[-1], mode='max', factor=0.7, patience=5)
         )
-    if num_partitions > 1:
+    if args.num_partitions > 1:
         print("Using Partitioned")
         model_bob = partitioned_resnet32(
-            num_partitions=num_partitions, num_clients=num_clients, hooked=False, num_classes=num_classes)
-    elif use_masked:
+            num_partitions=args.num_partitions, num_clients=args.num_clients, hooked=False, num_classes=num_classes)
+    elif args.use_masked:
         print("Using Masked")
-        if use_lenet:
+        if args.use_lenet:
             print("Using LeNet for Bob")
             model_bob = MaskedLeNet(
-                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes, use_additive=use_additive)
+                num_masks=args.num_clients, num_clients=args.num_clients, hooked=False, num_classes=num_classes, use_additive=args.use_additive)
         else:
             print("Using ResNet for Bob")
             model_bob = masked_resnet32(
-                num_masks=num_clients, num_clients=num_clients, hooked=False, num_classes=num_classes, use_additive=use_additive)
+                num_masks=args.num_clients, num_clients=args.num_clients, hooked=False, num_classes=num_classes, use_additive=args.use_additive)
     else:
-        if use_lenet:
+        if args.use_lenet:
             print("Using LeNet for Bob")
             model_bob = LeNet(hooked=False, num_classes=num_classes)
         else:
             print("Using ResNet for Bob")
             model_bob = resnet32(hooked=False, num_classes=num_classes)
-    opt_bob = optim.Adam(model_bob.parameters(), lr=1e-3 / 3 / 4, weight_decay=1e-4)
+    opt_bob = optim.Adam(model_bob.parameters(), lr=1e-3 / 3 / 3, weight_decay=1e-4)
     # shared = []
     # client_specific = []
     # for pname, p in model_bob.named_parameters():
@@ -332,9 +325,11 @@ def get_model(
         scheduler_list_alice,
         scheduler_bob,
         interrupted=interrupted,
-        avg=avg,
+        avg=False,
     )
-
+    print(alice)
+    print(model_bob)
+    
     return split_model, client_model_fn
 
 
@@ -398,8 +393,7 @@ def experiment_ucb(
     num_clients=100,
 ):
 
-    contrastive_loss = pml_losses.MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
-
+    contrastive_loss = pml_losses.SupConLoss()
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -495,22 +489,33 @@ def experiment_ucb(
 
                 else:
                     x, y = x.to(device_2), y.to(device_2)
-                    comm_interrupted += compute_comm_cost(x)
-                    _, output_final, flops_interrupted, flops_client = interrupted_nn.module(
+                    b = x.shape[0]
+
+                    intermediate_output, output_final, flops_interrupted, flops_client, send_server_cost = interrupted_nn.module(
                         x, i, True, flops_interrupted
                     )
+                    comm_interrupted += send_server_cost
                     flops_split_client += flops_client
                     loss3 = criterion(output_final, y)
                     losses = loss3.clone().detach().cpu()
                     loss_mean, loss_std = torch.mean(
                         losses).item(), torch.std(losses).item()
-                    total_loss = total_loss + loss3.mean()
+                    
+                    if use_contrastive:
+                        emb = intermediate_output.reshape(b, -1)
+                        loss2 = contrastive_loss(emb, y)
+
+                        total_loss = total_loss + alpha * loss2.mean()
+                        cl_meter.update(loss2.cpu().detach().mean().item())                    
+
+                    total_loss = total_loss + (1-alpha) * loss3.mean()
                     final_ce_meter.update(loss3.mean().item())
-                    if isinstance(interrupted_nn.module.bob[0].server_model, MaskedResNet):
-                        sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint(
-                        )
+
+                    if isinstance(interrupted_nn.module.bob[0].server_model, MaskedResNet) or isinstance(interrupted_nn.module.bob[0].server_model, MaskedLeNet):
+                        sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint()
                         total_loss = total_loss + l1_norm_weight * sparsity
-                    total_loss.backward()
+
+                    total_loss.backward(retain_graph=True)
                     grad = interrupted_nn.module.backward(i, out=True)
                     interrupted_nn.module.step(i, out=True)
                     comm_interrupted += compute_comm_cost(grad)
@@ -562,7 +567,7 @@ def experiment_ucb(
         # accs_alice = np.mean(accs_alice)
 
         # trigger scheduler bob after a warmup of 10 epochs
-        if ep > 10:
+        if ep >= 0:
             # split_nn.module.scheduler_step(
             #     num_clients-1, acc_split, step_bob=True, out=True)
             if ep in range(*interrupt_range):
@@ -661,10 +666,12 @@ class RandomGammaCorrection(object):
 @dataclass
 class hparam:
     cifar: bool = True
-    non_iid_50: bool = True
+    tiny: bool = True
+    non_iid_50_v1: bool = True
+    non_iid_50_v2: bool = True
     num_clients: int = 10
     k: int = 3
-    discount: float = 0.95
+    discount: float = 0.75
     poll_clients: bool = False
     interrupted: bool = True  # Interruption OFF/ON
     batch_size: int = 32
@@ -682,7 +689,7 @@ class hparam:
     experiment_name: str = ""
     interrupt_range: float = 0.7
     emb_dim: int = 64
-    alpha: float = 0.3
+    alpha: float = 0.1
     vanilla: bool = True
     avg_clients: bool = True
     use_lenet: bool = True
@@ -720,6 +727,7 @@ if __name__ == "__main__":
     interrupt_range = hparams_.interrupt_range
     emb_dim = hparams_.emb_dim
 
+    cifar_or_tiny = hparams_.cifar or hparams_.tiny
     if cifar:
         transform = transforms.Compose(
             [
@@ -744,7 +752,8 @@ if __name__ == "__main__":
         testset = torchvision.datasets.CIFAR10(
             root="./data", train=False, download=True, transform=transform_val
         )
-    else:
+
+    if hparams_.tiny:
         train_dir = "./data/tiny-imagenet-200/train/"
         val_dir = "./data/tiny-imagenet-200/val/"
         norm = transforms.Normalize(
@@ -780,24 +789,8 @@ if __name__ == "__main__":
         trainset = dsets.ImageFolder(train_dir, transform=transform)
         testset = dsets.ImageFolder(val_dir, transform=transform_val)
 
-    if hparams_.non_iid_50:
-        cifar_train_loader_list, cifar_test_loader_list = get_non_iid_50(
-            batch_size, 8, hparams_.num_clients)
-        contrastive_dataset_list = [None] * hparams_.num_clients
-        if hparams_.use_contrastive:
-            contrastive_dataset_list = cifar_train_loader_list
-
-        train_sizes = np.array(
-            list(cifar_train_loader_list[0].ds_sizes.values()))
-        niid_classes = 5
-
-    elif hparams_.classwise_subset:
-        # trainset = torchvision.datasets.CIFAR100(
-        #     root="./data", train=True, download=True, transform=transform
-        # )
-        # testset = torchvision.datasets.CIFAR100(
-        #     root="./data", train=False, download=True, transform=transform_val
-        # )
+    if hparams_.classwise_subset and cifar_or_tiny:
+        # Make Overlapping non-IID client splits
         total = torch.utils.data.ConcatDataset([trainset, testset])
         train_idx, test_idx, train_sizes = classwise_subset(
             total,
@@ -830,7 +823,8 @@ if __name__ == "__main__":
                 sampler=torch.utils.data.SubsetRandomSampler(test_idx[c])
             )
             cifar_test_loader_list.append(test_dl)
-    else:
+    elif cifar_or_tiny:
+        # Make IID client splits
         cifar_test_loader_list = torch.utils.data.DataLoader(
             testset, batch_size=256, shuffle=False, num_workers=os.cpu_count(), pin_memory=not cifar
         )
@@ -861,6 +855,30 @@ if __name__ == "__main__":
 
             train_sizes[i] = train_size
 
+    if hparams_.non_iid_50_v1:
+        cifar_train_loader_list, cifar_test_loader_list = get_non_iid_50_v1(
+            batch_size, 8, hparams_.num_clients)
+        contrastive_dataset_list = [None] * hparams_.num_clients
+        if hparams_.use_contrastive:
+            contrastive_dataset_list = cifar_train_loader_list
+
+        train_sizes = np.array(
+            list(cifar_train_loader_list[0].ds_sizes.values()))
+        niid_classes = 5
+
+    if hparams_.non_iid_50_v2:
+        cifar_train_loader_list, cifar_test_loader_list = get_non_iid_50_v2(
+            batch_size, 8, hparams_.num_clients)
+        contrastive_dataset_list = [None] * hparams_.num_clients
+        if hparams_.use_contrastive:
+            contrastive_dataset_list = cifar_train_loader_list
+
+        train_sizes = np.array(
+            list(cifar_train_loader_list[0].ds_sizes.values()))
+        niid_classes = 500
+
+
+
     if interrupted:
         interrupt_range = [0, int(interrupt_range*epochs)]
     else:
@@ -868,20 +886,10 @@ if __name__ == "__main__":
         emb_dim = None
     # split_nn = get_model(num_clients=num_clients,
     #                      interrupted=False, cifar=cifar)
-    interrupted_nn, model_fn = get_model(
-        num_clients=num_clients, 
-        num_partitions=hparams_.num_partitions, 
-        use_masked=hparams_.use_masked, 
-        interrupted=interrupted, 
-        cifar=cifar, 
-        emb_dim=emb_dim, 
-        non_iid_50=hparams_.non_iid_50, 
-        use_lenet=hparams_.use_lenet, 
-        use_head=hparams_.use_head,
-        use_additive=hparams_.use_additive
-    )
+    interrupted_nn, model_fn = get_model(hparams_)
 
     print("Average Train set size per client: ", train_sizes.mean().item())
+    print("Total Train set size: ", train_sizes.sum().item())
     (
         acc_split_list,
         acc_interrupted_list,

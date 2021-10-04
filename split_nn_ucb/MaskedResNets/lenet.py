@@ -29,10 +29,21 @@ class MaskedLeNet(nn.Module):
         out = self.fc3(i, out)
         return out
 
+    def sparsity_constraint(self):
+        loss = 0.
+        for pname, p in self.named_parameters():
+            if pname.find("weight_masks") != -1:
+                loss = loss + p.sigmoid().sum()
+        return loss
+
 if __name__ == "__main__":
     import torch
 
     net2 = MaskedLeNet(10, False, 10, 128)
+    num_params = 0
+    for p in net2.parameters():
+        num_params += p.numel().item()
+    print("Num Params in MaskedLeNet: ", num_params)
     inp = torch.randn(32, 20, 16, 16)
     out2 = net2(inp, 7)
     print(out2.shape)

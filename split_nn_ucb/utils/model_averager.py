@@ -7,7 +7,7 @@ def _initialize_weights(self):
         if isinstance(m, nn.Conv2d):
             nn.init.zeros_(m.weight)
             if m.bias is not None:
-                nn.init.zeros_(m.bias, 0)
+                nn.init.zeros_(m.bias)
         elif isinstance(m, nn.BatchNorm2d):
             nn.init.zeros_(m.weight)
             nn.init.zeros_(m.bias)

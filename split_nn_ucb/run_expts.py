@@ -2,11 +2,11 @@ import os
 import multiprocessing as mp
 
 NUM_GPUS = 1
-JOBS_PER_GPU = 2
+JOBS_PER_GPU = 1
 
 cesl_args = " --interrupted --use_ucb --use_masked --use_additive --use_contrastive --epochs 20 --use_lenet --use_head "
 cesl_random_args = " --interrupted --use_random --use_masked --use_additive --use_contrastive --epochs 20 --use_lenet --use_head "
-vanilla_args = " --vanilla --epochs "
+vanilla_args = " --vanilla --use_head "
 
 def run_command(args):
     i, command = args
@@ -27,22 +27,29 @@ interrupt_ranges = [0.3, 0.45, 0.6, 0.75, 0.9]
 #     p.map(make_command_interrupt_range, enumerate(interrupt_ranges))
 
 # non_iid_50 expts
-def make_command_niid_50(random_or_not, vanilla_or_not, num_clients, k, masked=False):
+def make_command_niid_50(random_or_not, vanilla_or_not, num_clients, k, avg=False, masked=False, run=0, use_head=True, version="v1"):
     extra = ""
-    if vanilla_or_not:
-        name = f"Vanilla-{num_clients}-{num_clients}"
-        extra += vanilla_args
+    if avg:
+        name = f"SplitFed-{num_clients}-{num_clients}"
+        extra += " --avg_clients --vanilla "
     else:
-        if random_or_not:
-            name = f"CESL-Random-{k}-{num_clients}"
-            extra += cesl_random_args
+        if vanilla_or_not:
+            name = f"Vanilla-{num_clients}-{num_clients}"
+            extra += vanilla_args
         else:
-            name = f"CESL-{k}-{num_clients}"
-            extra += cesl_args
+            if random_or_not:
+                name = f"CESL-Random-{k}-{num_clients}"
+                extra += cesl_random_args
+            else:
+                name = f"CESL-{k}-{num_clients}"
+                extra += cesl_args
+    if use_head == False:
+        extra = extra.replace("--use_head", "")
+        name = f"CESL-No-Head-{num_clients}-{num_clients}"
     if masked: 
-        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {num_clients} --experiment_name non_iid_50_Only-Masked --l1_norm_weight 1e-3 --epochs 20 --use_masked --use_additive --use_lenet ''' 
+        command = f'''python3 train.py --non_iid_50_{version} --num_clients {num_clients} --k {num_clients} --experiment_name non_iid_50_{version}_Only-Masked_{run} --l1_norm_weight 1e-3 --epochs 20 --use_masked --use_additive --use_lenet ''' 
     else:        
-        command = f'''python3 train.py --cifar --non_iid_50 --num_clients {num_clients} --k {k} --experiment_name non_iid_50_{name} --l1_norm_weight 1e-3 --use_lenet ''' 
+        command = f'''python3 train.py  --non_iid_50_{version} --num_clients {num_clients} --k {k} --experiment_name non_iid_50_{version}_{name}_{run} --l1_norm_weight 1e-3 --use_lenet ''' 
         command += extra
     return command
 
@@ -50,25 +57,105 @@ niid_commands = [
     # Random
     # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=3),
     # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6),
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6, run=0),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6, run=1),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6, run=2),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6, run=3),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6, run=4),
     # No Client Selection
     # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5),
     # Bandit
     # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6),
     # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=3),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6, run=0),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6, run=1),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6, run=2),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6, run=3),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6, run=4),
     # Vanilla
     # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5),
-    # Only Masked
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10, masked=True),
-    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=0),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=1),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=2),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=3),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=4),
+    # SplitFed
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=0, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=1, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=2, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=3, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10, run=4, avg=True),
+    # # use_head = False
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=6, run=0, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=6, run=1, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=6, run=2, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=6, run=3, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=6, run=4, use_head=False),
+    
+    # # Only Masked
+    # # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10, masked=True),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=0),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=1),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=2),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=3),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=4),
 ]
 
-with mp.Pool(JOBS_PER_GPU * NUM_GPUS) as p:
-    p.map(run_command, enumerate(niid_commands))
+# with mp.Pool(1 * NUM_GPUS) as p:
+#     p.map(run_command, enumerate(niid_commands))
 
+niid_commands = [
+    # Random
+    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=3),
+    # make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=10, k=6),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=0),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=1),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=2),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=3),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=4),
+    # No Client Selection
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5),
+    # Bandit
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=6),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=3),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=0),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=1),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=2),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=3),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=4),
+    # Vanilla
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=10, k=10),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=0),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=1),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=2),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=3),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=4),
+    # SplitFed
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=0, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=1, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=2, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=3, avg=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=4, avg=True),
+    # # use_head = False
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=3, run=0, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=3, run=1, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=3, run=2, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=3, run=3, use_head=False),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=3, run=4, use_head=False),
+    
+    # # Only Masked
+    # # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=10, k=10, masked=True),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=0),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=1),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=2),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=3),
+    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=5, masked=True, run=4),
+]
+
+with mp.Pool(2 * NUM_GPUS) as p:
+    p.map(run_command, enumerate(niid_commands))
 
 # # Cifar10 expts
 def make_command_cifar(random_or_not, vanilla_or_not, num_clients, k, iid_or_not, avg_clients=False):

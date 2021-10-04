@@ -88,13 +88,13 @@ class ShuffledCycle:
 
 
 class NonIID50Train:
-    def __init__(self, num_clients, client_id, batch_size):
-
+    def __init__(self, num_clients, client_id, batch_size, version):
+        assert(version in ['v1', 'v2'])
         self.num_clients = num_clients
         self.client_id = client_id
         self.batch_size = batch_size
 
-        args = Arguments("./non_iid_50/scripts/tasks/non_iid_50/", num_clients)
+        args = Arguments(f"./non_iid_50/scripts/tasks/non_iid_50_{version}/non_iid_50/", num_clients)
         self.dl = dl = DataLoader(args)
         self.data = {}
         for k in range(num_clients):
@@ -129,12 +129,13 @@ class NonIID50Train:
 
 
 class NonIID50Test(torch.utils.data.Dataset):
-    def __init__(self, num_clients, client_id):
+    def __init__(self, num_clients, client_id, version):
+        assert(version in ['v1', 'v2'])
 
         self.num_clients = num_clients
         self.client_id = client_id
 
-        args = Arguments("./non_iid_50/scripts/tasks/non_iid_50/", num_clients)
+        args = Arguments(f"./non_iid_50/scripts/tasks/non_iid_50_{version}/non_iid_50/", num_clients)
         self.dl = dl = DataLoader(args)
         self.data = {}
         for k in range(num_clients):
@@ -179,19 +180,31 @@ def non_iid_50_collate_fn(batches):
     return xb, yb
 
 
-def get_non_iid_50(batch_size, num_workers, num_clients):
+def get_non_iid_50_v1(batch_size, num_workers, num_clients):
     tr_dl = {}
     for i in range(num_clients):
-        tr_ds = NonIID50Train(num_clients, i, batch_size)
+        tr_ds = NonIID50Train(num_clients, i, batch_size, version="v1")
         tr_dl[i] = tr_ds
 
     ts_dl = {}
     for i in range(num_clients):
-        ts_ds = NonIID50Test(num_clients, client_id=i)
+        ts_ds = NonIID50Test(num_clients, client_id=i, version="v1")
         ts_dl[i] = torch.utils.data.DataLoader(
             ts_ds, 256, num_workers=num_workers, collate_fn=non_iid_50_collate_fn, pin_memory=True)
     return tr_dl, ts_dl
 
+def get_non_iid_50_v2(batch_size, num_workers, num_clients):
+    tr_dl = {}
+    for i in range(num_clients):
+        tr_ds = NonIID50Train(num_clients, i, batch_size, "v2")
+        tr_dl[i] = tr_ds
+
+    ts_dl = {}
+    for i in range(num_clients):
+        ts_ds = NonIID50Test(num_clients, client_id=i, version="v2")
+        ts_dl[i] = torch.utils.data.DataLoader(
+            ts_ds, 256, num_workers=num_workers, collate_fn=non_iid_50_collate_fn, pin_memory=True)
+    return tr_dl, ts_dl
 
 if __name__ == "__main__":
     bdir = "./non_iid_50/scripts/tasks/non_iid_50/"

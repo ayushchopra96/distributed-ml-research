@@ -185,7 +185,7 @@ class LeNet(nn.Module):
                 nn.MaxPool2d((3, 3), (2, 2), padding=1)
             )
             if self.use_head:
-                self.conv_hook = nn.Conv2d(20, 128, kernel_size=1, bias=False)
+                self.conv_hook = nn.Conv2d(20, 128, kernel_size=1)
                 self.head = nn.Linear(128, num_classes if emb_dim is None else emb_dim)
         else:
             self.conv2 = nn.Sequential(
@@ -202,7 +202,7 @@ class LeNet(nn.Module):
         if self.hooked:
             layer1_out = self.conv1(x)
             if self.use_head:
-                emb = self.conv_hook(layer1_out)
+                emb = F.leaky_relu(self.conv_hook(layer1_out))
                 size = emb.size(3)
                 if not isinstance(size, int):
                     size = size.item()
@@ -231,12 +231,19 @@ def test(net):
 
 
 if __name__ == "__main__":
-    net1 = LeNet(10, True, emb_dim=128, use_head=False)
+    net1 = LeNet(10, True, emb_dim=64, use_head=False)
+    num_params = 0
+    for p in net1.parameters():
+        num_params += p.numel()
+
     inp = torch.randn(32, 3, 32, 32)
     feat_next, emb = net1(inp)
     print(feat_next.shape, emb)
 
     net2 = LeNet(10, False, 128)
+    for p in net2.parameters():
+        num_params += p.numel()
+    print("Num Params in LeNet:", num_params)
     inp = torch.randn(*feat_next.shape)
     out2 = net2(inp)
     print(out2.shape)
