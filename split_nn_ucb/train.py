@@ -30,8 +30,6 @@ from torch.utils.data import Dataset, DataLoader
 from dataset_wrapper import DataWrapper, DataWrapper, classwise_subset
 import matplotlib.pyplot as plt
 from torch.autograd import Variable
-from PartitionedResNets import resnet32 as partitioned_resnet32
-from PartitionedResNets import PartitionedResNet
 from MaskedResNets import resnet18 as masked_resnet18
 from MaskedResNets import MaskedResNet, MaskedLeNet
 from functools import lru_cache, partial
@@ -288,9 +286,7 @@ def get_model(args):
             #             ReduceLROnPlateau(opt_list_alice[-1], mode='max', factor=0.7, patience=5)
         )
     if args.num_partitions > 1:
-        print("Using Partitioned")
-        model_bob = partitioned_resnet32(
-            num_partitions=args.num_partitions, num_clients=args.num_clients, hooked=False, num_classes=num_classes)
+        raise ValueError("Partitioned Models are deprecated!")
     elif args.use_masked:
         print("Using Masked")
         if args.use_lenet:
