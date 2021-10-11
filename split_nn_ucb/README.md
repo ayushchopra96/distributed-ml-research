@@ -19,10 +19,9 @@ Communication-Client Commpute can be traded-off by adjusting:
 
 ## Faster (& better) Optimization through inter-client transfer
 - The server optimizes shared weights U, and client-specific weights V<sub>c</sub> and W<sub>c</sub>.
-- For a client c, the final weights theta is computed using theta = U * V<sub>c</sub> + W<sub>c</sub>.
-- V<sub>c</sub> and W<sub>c</sub> are forced to be extremely sparse using L1-norm constraint.
+- For a client c, the final weights theta is computed using theta = U * V<sub>c</sub>.
+- V<sub>c</sub> is forced to be extremely sparse using L1-norm constraint.
 - V<sub>c</sub> masks U such that the client c can retrieve knowledge that is common among other clients i.e. U
-- W<sub>c</sub> learns client c's task-specific knowledge.
 
 ## Efficient Communication with sparse activations
 - We only communicate non-zero elements of the activation tensors and gradients to save bandwidth.
