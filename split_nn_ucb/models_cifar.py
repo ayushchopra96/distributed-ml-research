@@ -84,17 +84,19 @@ class BasicBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, hooked=False, option='A', num_layers=1, emb_dim=None):
+    def __init__(self, block, num_blocks, num_classes=10, hooked=False, option='A', num_layers=1, emb_dim=None, use_head=True):
         super(ResNet, self).__init__()
         self.in_planes = 16
         self.num_layers = num_layers
         self.hooked = hooked
+        self.use_head = use_head
         if self.hooked:
             self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
             self.bn1 = nn.BatchNorm2d(16)
             self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1, option=option)
-            self.conv_hook = nn.Conv2d(16, 64, kernel_size=1, bias=False)
-            self.fc = nn.Linear(64, num_classes if emb_dim is None else emb_dim)
+            if self.use_head:
+                self.conv_hook = nn.Conv2d(16, 64, kernel_size=1, bias=False)
+                self.fc = nn.Linear(64, num_classes if emb_dim is None else emb_dim)
         else:
             self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2, option=option)
             self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2, option=option)
@@ -125,22 +127,23 @@ class ResNet(nn.Module):
         else:
             out = F.relu(self.bn1(self.conv1(x)))
             layer1_out = self.layer1(out)
-            out = self.conv_hook(layer1_out)
-            size = out.size(3)
-            if not isinstance(size, int):
-                size = size.item()
-            out = F.avg_pool2d(out, size)
-            out = out.view(out.size(0), -1)
-            out = self.fc(out)
-            return layer1_out, out
+            if self.use_head:
+                out = F.leaky_relu(self.conv_hook(layer1_out))
+                size = out.size(3)
+                if not isinstance(size, int):
+                    size = size.item()
+                out = F.avg_pool2d(out, size)
+                out = out.view(out.size(0), -1)
+                out = self.fc(out)
+                return layer1_out, out
+            return layer1_out, None
+
+def resnet18(hooked=False, option='A', num_classes=10, emb_dim=None, num_layers=1, use_head=True):
+    return ResNet(BasicBlock, [2, 2, 2, 2], hooked=hooked, option=option, num_classes=num_classes, num_layers=num_layers, emb_dim=emb_dim, use_head=use_head)
 
 
-def resnet18(hooked=False, option='A', num_classes=10, emb_dim=None, num_layers=1):
-    return ResNet(BasicBlock, [2, 2, 2], hooked=hooked, option=option, num_classes=num_classes, num_layers=num_layers, emb_dim=emb_dim)
-
-
-def resnet32(hooked=False, option='A', num_classes=10, emb_dim=None, num_layers=1):
-    return ResNet(BasicBlock, [5, 5, 5], hooked=hooked, option=option, num_classes=num_classes, num_layers=num_layers, emb_dim=emb_dim)
+def resnet32(hooked=False, option='A', num_classes=10, emb_dim=None, num_layers=1, use_head=True):
+    return ResNet(BasicBlock, [5, 5, 5], hooked=hooked, option=option, num_classes=num_classes, num_layers=num_layers, emb_dim=emb_dim, use_head=use_head)
 
 
 def resnet44(hooked=False, option='A', num_classes=10):
@@ -173,50 +176,103 @@ class Conv2dSamePadding(nn.Conv2d):
         return  self._conv_forward(self.zero_pad_2d(input), self.weight, self.bias)
 
 class LeNet(nn.Module):
-    def __init__(self, num_classes, hooked, use_head=True, emb_dim=None):
+    def __init__(self, num_classes, hooked, use_head=True, emb_dim=None, client_size_config=1):
         super(LeNet, self).__init__()
         self.hooked = hooked
         self.use_head = use_head
+        self.client_size_config = client_size_config
         if self.hooked:
-            self.conv1 = nn.Sequential(
-                Conv2dSamePadding(3, 20, 5, stride=1),
-                nn.ReLU(inplace=True),
-                nn.LocalResponseNorm(size=4, alpha=0.001/9.0, beta=0.75, k=1.0),
-                nn.MaxPool2d((3, 3), (2, 2), padding=1)
-            )
+            if self.client_size_config >= 1:
+                self.conv1 = nn.Sequential(
+                    Conv2dSamePadding(3, 20, 5, stride=1),
+                    nn.ReLU(inplace=True),
+                    nn.LocalResponseNorm(size=4, alpha=0.001/9.0, beta=0.75, k=1.0),
+                    nn.MaxPool2d((3, 3), (2, 2), padding=1)
+                )
+                feat_num_channels = 20
+            if self.client_size_config >= 2:
+                self.conv2 = nn.Sequential(
+                    Conv2dSamePadding(20, 50, 5, stride=1),
+                    nn.ReLU(inplace=True),
+                    nn.LocalResponseNorm(size=4, alpha=0.001/9.0, beta=0.75, k=1.0),
+                    nn.MaxPool2d(3, 2, padding=1)
+                )
+                feat_num_channels = 50
+            if self.client_size_config >= 3:
+                self.fc1   = nn.Linear(3200, 800)
+                feat_num_channels = 800
+            if self.client_size_config >= 4:
+                self.fc2   = nn.Linear(800, 500)
+                feat_num_channels = 500
             if self.use_head:
-                self.conv_hook = nn.Conv2d(20, 128, kernel_size=1)
-                self.head = nn.Linear(128, num_classes if emb_dim is None else emb_dim)
+                if self.client_size_config < 3:
+                    self.conv_hook = nn.Conv2d(feat_num_channels, 128, kernel_size=1)
+                    self.head = nn.Linear(128, num_classes if emb_dim is None else emb_dim)
+                else:
+                    self.conv_hook = nn.Linear(feat_num_channels, 256)
+                    self.head = nn.Linear(256, num_classes if emb_dim is None else emb_dim)                    
         else:
-            self.conv2 = nn.Sequential(
-                Conv2dSamePadding(20, 50, 5, stride=1),
-                nn.ReLU(inplace=True),
-                nn.LocalResponseNorm(size=4, alpha=0.001/9.0, beta=0.75, k=1.0),
-                nn.MaxPool2d(3, 2, padding=1)
-            )
-            self.fc1   = nn.Linear(3200, 800)
-            self.fc2   = nn.Linear(800, 500)
-            self.fc3   = nn.Linear(500, num_classes)
+            if self.client_size_config <= 1:
+                self.conv2 = nn.Sequential(
+                    Conv2dSamePadding(20, 50, 5, stride=1),
+                    nn.ReLU(inplace=True),
+                    nn.LocalResponseNorm(size=4, alpha=0.001/9.0, beta=0.75, k=1.0),
+                    nn.MaxPool2d(3, 2, padding=1)
+                )
+                self.fc1   = nn.Linear(3200, 800)
+                self.fc2   = nn.Linear(800, 500)
+                self.fc3   = nn.Linear(500, num_classes)
+            elif self.client_size_config <= 2:
+                self.fc1   = nn.Linear(3200, 800)
+                self.fc2   = nn.Linear(800, 500)
+                self.fc3   = nn.Linear(500, num_classes)
+            elif self.client_size_config <= 3:
+                self.fc2   = nn.Linear(800, 500)
+                self.fc3   = nn.Linear(500, num_classes)
+            elif self.client_size_config <= 4:
+                self.fc3   = nn.Linear(500, num_classes)
 
     def forward(self, x):
         if self.hooked:
             layer1_out = self.conv1(x)
+            if self.client_size_config >= 2:
+                layer1_out = self.conv2(layer1_out)
+            if self.client_size_config >= 3:
+                layer1_out = F.relu(
+                    self.fc1(layer1_out.reshape(x.shape[0], -1))
+                )
+            if self.client_size_config >= 4:
+                layer1_out = F.relu(
+                    self.fc2(layer1_out)
+                )
             if self.use_head:
                 emb = F.leaky_relu(self.conv_hook(layer1_out))
-                size = emb.size(3)
-                if not isinstance(size, int):
-                    size = size.item()
-                emb = F.max_pool2d(emb, size).reshape(emb.shape[0], -1)
+                if self.client_size_config < 3:
+                    size = emb.size(3)
+                    if not isinstance(size, int):
+                        size = size.item()
+                    emb = F.max_pool2d(emb, size).reshape(emb.shape[0], -1)
                 emb = self.head(emb)
                 return layer1_out, emb
             else:
                 return layer1_out, None
         else:
-            out = self.conv2(x)
-            out = out.view(out.shape[0], -1)
-            out = F.relu(self.fc1(out))
-            out = F.relu(self.fc2(out))
-            out = self.fc3(out)
+            if self.client_size_config == 1:
+                x = self.conv2(x)
+                x = x.view(x.shape[0], -1)
+                x = F.relu(self.fc1(x))
+                x = F.relu(self.fc2(x))
+                out = self.fc3(x)
+            if self.client_size_config == 2:
+                x = x.view(x.shape[0], -1)
+                x = F.relu(self.fc1(x))
+                x = F.relu(self.fc2(x))
+                out = self.fc3(x)
+            if self.client_size_config == 3:            
+                x = F.relu(self.fc2(x))
+                out = self.fc3(x)
+            if self.client_size_config == 4:            
+                out = self.fc3(x)
             return out
 
 
@@ -231,20 +287,55 @@ def test(net):
 
 
 if __name__ == "__main__":
-    net1 = LeNet(10, True, emb_dim=64, use_head=False)
-    num_params = 0
-    for p in net1.parameters():
-        num_params += p.numel()
+    # net1 = LeNet(10, True, emb_dim=64, use_head=False)
+    # num_params = 0
+    # for p in net1.parameters():
+    #     num_params += p.numel()
+
+    # inp = torch.randn(32, 3, 32, 32)
+    # feat_next, emb = net1(inp)
+    # print(feat_next.shape, emb)
+
+    # net2 = LeNet(10, False, 128)
+    # for p in net2.parameters():
+    #     num_params += p.numel()
+    # print("Num Params in LeNet:", num_params)
+    # inp = torch.randn(*feat_next.shape)
+    # out2 = net2(inp)
+    # print(out2.shape)
+    
+    # net = resnet18(hooked=True, num_classes=10)
+    # inp = torch.randn(32, 3, 32, 32)
+    # out,_ = net(inp)
+    # print(out.shape)
+    # net2 = resnet18(hooked=False, num_classes=10)
+    # out = net2(out)
+    # print(out.shape)
 
     inp = torch.randn(32, 3, 32, 32)
-    feat_next, emb = net1(inp)
-    print(feat_next.shape, emb)
+    net1 = LeNet(10, True, client_size_config=1)
+    net2 = LeNet(10, False, client_size_config=1)
+    feat, emb = net1(inp)
+    out = net2(feat)
+    print(out.shape)
 
-    net2 = LeNet(10, False, 128)
-    for p in net2.parameters():
-        num_params += p.numel()
-    print("Num Params in LeNet:", num_params)
-    inp = torch.randn(*feat_next.shape)
-    out2 = net2(inp)
-    print(out2.shape)
+    inp = torch.randn(32, 3, 32, 32)
+    net1 = LeNet(10, True, client_size_config=2)
+    net2 = LeNet(10, False, client_size_config=2)
+    feat, emb = net1(inp)
+    out = net2(feat)
+    print(out.shape)
     
+    inp = torch.randn(32, 3, 32, 32)
+    net1 = LeNet(10, True, client_size_config=3)
+    net2 = LeNet(10, False, client_size_config=3)
+    feat, emb = net1(inp)
+    out = net2(feat)
+    print(out.shape)
+
+    inp = torch.randn(32, 3, 32, 32)
+    net1 = LeNet(10, True, client_size_config=4)
+    net2 = LeNet(10, False, client_size_config=4)
+    feat, emb = net1(inp)
+    out = net2(feat)
+    print(out.shape)

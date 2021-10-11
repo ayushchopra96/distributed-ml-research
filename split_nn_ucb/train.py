@@ -2,7 +2,8 @@ from argparse import ArgumentParser
 from dataclasses import dataclass
 
 from fvcore.nn.flop_count import flop_count
-from models_cifar import resnet32, LeNet
+from torchvision.transforms.transforms import ToPILImage
+from models_cifar import resnet18, LeNet
 from ucb import UniformRandom, BayesianUCB, VWBandit
 from copy import deepcopy
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
@@ -31,7 +32,7 @@ import matplotlib.pyplot as plt
 from torch.autograd import Variable
 from PartitionedResNets import resnet32 as partitioned_resnet32
 from PartitionedResNets import PartitionedResNet
-from MaskedResNets import resnet32 as masked_resnet32
+from MaskedResNets import resnet18 as masked_resnet18
 from MaskedResNets import MaskedResNet, MaskedLeNet
 from functools import lru_cache, partial
 from non_iid_50 import get_non_iid_50_v1, get_non_iid_50_v2
@@ -66,18 +67,18 @@ class Client(nn.Module):
         self.client_emb = None
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        self.client_intermediate, self.client_emb = self.client_model(inputs)
-        to_server = self.client_intermediate.detach().requires_grad_()
-
-        return to_server, self.client_emb
+        to_server, self.client_emb = self.client_model(inputs)
+        to_server_stopped = to_server#.detach().requires_grad_()
+        self.client_intermediate = to_server
+        return to_server, to_server_stopped, self.client_emb
 
     def client_backward(self, grad_from_server=None):
-        if grad_from_server != None:
-            self.grad_from_server = grad_from_server
-            self.client_intermediate.backward(self.grad_from_server)
-        else:
-            self.client_intermediate.backward()
-
+        # if grad_from_server != None:
+        #     self.grad_from_server = grad_from_server
+        #     self.client_intermediate.backward()#self.grad_from_server)
+        # else:
+        #     self.client_intermediate.backward()
+        pass
     def train(self):
         self.client_model.train()
 
@@ -92,7 +93,9 @@ class Server(nn.Module):
         self.to_server = None
         self.grad_to_client = None
 
-    def forward(self, to_server, i=None):
+    def forward(self, to_server, i=None, interrupt=False):
+        if interrupt:
+            to_server = to_server.detach().requires_grad_()
         self.to_server = to_server
         if i is not None:
             outputs = self.server_model(self.to_server, i)
@@ -101,8 +104,9 @@ class Server(nn.Module):
         return outputs
 
     def server_backward(self,):
-        self.grad_to_client = self.to_server.grad.clone()
-        return self.grad_to_client
+        # self.grad_to_client = self.to_server.grad.clone()
+        # return self.grad_to_client
+        pass
 
     def train(self):
         self.server_model.train()
@@ -143,21 +147,21 @@ class SplitNN(nn.Module):
         self.scheduler_bob = scheduler_bob
         self.avg = avg
 
-    def forward(self, inputs, i, out, flops):
-        to_server, output = self.clients[f"alice{i}"](inputs)
+    def forward(self, inputs, i, out, flops, interrupt):
+        to_server_stopped, to_server, output = self.clients[f"alice{i}"](inputs)
         client_flops = compute_flops(self.clients[f"alice{i}"], (inputs,), "alice")
         if out:
-            send_server_cost = compute_comm_cost(to_server)
+            send_server_cost = compute_comm_cost(to_server_stopped)
             if output is None:
                 output = to_server
             if self.is_partitioned_or_masked:
-                output_final = self.bob[0](to_server, i)
-                flops += compute_flops(self.bob[0], (to_server, i), "bob")
-                return output, output_final, flops + client_flops, client_flops, send_server_cost
+                output_final = self.bob[0](to_server_stopped, i, interrupt=interrupt)
+                flops += compute_flops(self.bob[0], (to_server_stopped, i), "bob")
+                return output, to_server, output_final, flops + client_flops, client_flops, send_server_cost
             else:
-                output_final = self.bob[0](to_server)
-                flops += compute_flops(self.bob[0], (to_server,), "bob")
-                return output, output_final, flops + client_flops, client_flops, send_server_cost
+                output_final = self.bob[0](to_server_stopped, interrupt=interrupt)
+                flops += compute_flops(self.bob[0], (to_server_stopped,), "bob")
+                return output, to_server, output_final, flops + client_flops, client_flops, send_server_cost
         else:
             return output, to_server, flops + client_flops
 
@@ -227,8 +231,9 @@ class SplitNN(nn.Module):
                 images = images.to(device)
                 labels = labels.to(device)
 
-            output, output_final, f, fc, cost = self.forward(
-                images, i, out=True, flops=0)
+            output, to_server, output_final, f, fc, cost = self.forward(
+                images, i, out=True, flops=0, interrupt=False
+            )
             _, predicted_m1 = torch.max(output_final.data, 1)
             # r, predicted_m2 = torch.max(output.data, 1)
 
@@ -261,10 +266,10 @@ def get_model(args):
     alice_models = []
     if args.use_lenet:
         print("Using LeNet for Alice")
-        client_model_fn = partial(LeNet, hooked=True, num_classes=num_classes, emb_dim=args.emb_dim, use_head=args.use_head)
+        client_model_fn = partial(LeNet, hooked=True, num_classes=num_classes, emb_dim=args.emb_dim, use_head=args.use_head, client_size_config=args.client_model_size)
     else:
         print("Using ResNet for Alice")
-        client_model_fn = partial(resnet32, hooked=True, num_classes=num_classes, emb_dim=args.emb_dim)
+        client_model_fn = partial(resnet18, hooked=True, num_classes=num_classes, emb_dim=args.emb_dim, use_head=args.use_head)
     for i in range(num_clients):
         model_a = client_model_fn()
         alice_models.append(model_a)
@@ -276,7 +281,7 @@ def get_model(args):
         alice.train()
         opt_list_alice.append(
             #             optim.SGD(alice.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-            optim.Adam(alice.parameters(), lr=1e-3 / 3 / 3, weight_decay=1e-4)
+            optim.Adam(alice.parameters(), lr=args.lr, weight_decay=1e-5)
         )
         scheduler_list_alice.append(
             CosineAnnealingLR(opt_list_alice[-1], T_max=T_max)
@@ -291,19 +296,19 @@ def get_model(args):
         if args.use_lenet:
             print("Using LeNet for Bob")
             model_bob = MaskedLeNet(
-                num_masks=args.num_clients, num_clients=args.num_clients, hooked=False, num_classes=num_classes, use_additive=args.use_additive)
+                num_masks=args.num_clients, num_clients=args.num_clients, hooked=False, num_classes=num_classes, use_additive=args.use_additive, client_size_config=args.client_model_size, use_attention=args.use_attention)
         else:
             print("Using ResNet for Bob")
-            model_bob = masked_resnet32(
-                num_masks=args.num_clients, num_clients=args.num_clients, hooked=False, num_classes=num_classes, use_additive=args.use_additive)
+            model_bob = masked_resnet18(
+                num_masks=args.num_clients, num_clients=args.num_clients, hooked=False, num_classes=num_classes, use_additive=args.use_additive, use_attention=args.use_attention)
     else:
         if args.use_lenet:
             print("Using LeNet for Bob")
-            model_bob = LeNet(hooked=False, num_classes=num_classes)
+            model_bob = LeNet(hooked=False, num_classes=num_classes, client_size_config=args.client_model_size)
         else:
             print("Using ResNet for Bob")
-            model_bob = resnet32(hooked=False, num_classes=num_classes)
-    opt_bob = optim.Adam(model_bob.parameters(), lr=1e-3 / 3 / 3, weight_decay=1e-4)
+            model_bob = resnet18(hooked=False, num_classes=num_classes)
+    opt_bob = optim.Adam(model_bob.parameters(), lr=args.lr, weight_decay=1e-5)
     # shared = []
     # client_specific = []
     # for pname, p in model_bob.named_parameters():
@@ -327,8 +332,8 @@ def get_model(args):
         interrupted=interrupted,
         avg=False,
     )
-    print(alice)
-    print(model_bob)
+    # print(alice)
+    # print(model_bob)
     
     return split_model, client_model_fn
 
@@ -391,9 +396,13 @@ def experiment_ucb(
     l1_norm_weight,
     steps=None,
     num_clients=100,
+    sparse_features=False,
+    sparsity_weight=1e-5,
+    local_parallel=False
 ):
 
-    contrastive_loss = pml_losses.SupConLoss()
+    contrastive_loss = pml_losses.NTXentLoss(temperature=0.07)
+    # contrastive_loss = pml_losses.SupConLoss()
 
     flops_split_client, flops_split, flops_interrupted, comm_split, comm_interrupted, steps = 0, 0, 0, 0, 0, 0
     (   
@@ -413,6 +422,7 @@ def experiment_ucb(
     final_ce_meter = AverageMeter()
     intermediate_ce_meter = AverageMeter()
     cl_meter = AverageMeter()
+    feature_sparsity = AverageMeter()
 
     if use_random:
         bandit = UniformRandom(num_clients, discount_hparam, dataset_sizes, k)
@@ -463,14 +473,21 @@ def experiment_ucb(
                     x, y = x.to(device_2), y.to(device_2)
                     before_flops = deepcopy(flops_interrupted)
                     intermediate_output, x_next, flops_interrupted = interrupted_nn.module(
-                        x, i, False, flops_interrupted
+                        x, i, False, flops_interrupted, interrupt=True
                     )
                     flops_split_client += (flops_interrupted - before_flops)
                     if use_contrastive:
+                        # print(intermediate_output.shape, x_next.shape)
                         if use_head:
                             emb = intermediate_output.reshape(b, -1)
+                            to_sparse = x_next
                         else:
                             emb = x_next.reshape(b, -1)
+                            to_sparse = x_next
+                        if sparse_features:
+                            feature_sparsity_loss = sparsity_weight * torch.abs(to_sparse).sum()
+                            # print("fsl", feature_sparsity_loss)
+                        feature_sparsity.update(torch.true_divide(torch.count_nonzero(to_sparse), to_sparse.numel()).item())
                         loss2 = contrastive_loss(emb, y)
                         cl_meter.update(loss2.cpu().detach().mean().item())
                     else:
@@ -483,19 +500,30 @@ def experiment_ucb(
                         comm_interrupted += 2 * 4 * 1e-6
                     else:
                         loss_mean, loss_std = None, None
+                    if sparse_features:
+                        # print("fsl", feature_sparsity_loss * 500)
+                        total_loss = total_loss + feature_sparsity_loss 
                     total_loss = total_loss + loss2.mean()
                     total_loss.backward()
+                    # for p in interrupted_nn.module.clients["alice0"].parameters():
+                    #     print(p.grad)
+                    #     break
                     interrupted_nn.module.step(i, out=False)
 
                 else:
                     x, y = x.to(device_2), y.to(device_2)
                     b = x.shape[0]
 
-                    intermediate_output, output_final, flops_interrupted, flops_client, send_server_cost = interrupted_nn.module(
-                        x, i, True, flops_interrupted
+                    intermediate_output, to_server, output_final, flops_interrupted, flops_client, send_server_cost = interrupted_nn.module(
+                        x, i, True, flops_interrupted, interrupt=local_parallel
                     )
+                    if sparse_features:
+                        total_loss = total_loss + sparsity_weight * torch.abs(to_server).sum()
+                    feature_sparsity.update(torch.true_divide(torch.count_nonzero(to_server), to_server.numel()).item())
+
                     comm_interrupted += send_server_cost
                     flops_split_client += flops_client
+
                     loss3 = criterion(output_final, y)
                     losses = loss3.clone().detach().cpu()
                     loss_mean, loss_std = torch.mean(
@@ -505,20 +533,24 @@ def experiment_ucb(
                         emb = intermediate_output.reshape(b, -1)
                         loss2 = contrastive_loss(emb, y)
 
-                        total_loss = total_loss + alpha * loss2.mean()
+                        loss2.mean().backward(retain_graph=True)
+                        # for p in interrupted_nn.module.clients[f'alice{i}'].parameters():
+                        #     print(p.grad)
                         cl_meter.update(loss2.cpu().detach().mean().item())                    
 
-                    total_loss = total_loss + (1-alpha) * loss3.mean()
+                    total_loss = total_loss + loss3.mean()
                     final_ce_meter.update(loss3.mean().item())
 
                     if isinstance(interrupted_nn.module.bob[0].server_model, MaskedResNet) or isinstance(interrupted_nn.module.bob[0].server_model, MaskedLeNet):
                         sparsity = interrupted_nn.module.bob[0].server_model.sparsity_constraint()
                         total_loss = total_loss + l1_norm_weight * sparsity
 
-                    total_loss.backward(retain_graph=True)
-                    grad = interrupted_nn.module.backward(i, out=True)
+                    total_loss.backward()
+                    interrupted_nn.module.backward(i, out=True)
+
                     interrupted_nn.module.step(i, out=True)
-                    comm_interrupted += compute_comm_cost(grad)
+                    if not local_parallel:
+                        comm_interrupted += compute_comm_cost(to_server)
 
                 steps += 1
                 if ep not in range(*interrupt_range):
@@ -533,16 +565,17 @@ def experiment_ucb(
 
             if use_contrastive:
                 batch_iter.set_description(
-                    f"Final CE: {final_ce_meter.avg:.2f}, CL: {cl_meter.avg:.2f}", refresh=True
+                    f"Final CE: {final_ce_meter.avg:.2f}, CL: {cl_meter.avg:.2f}, sparsity: {feature_sparsity.avg:.2f}", refresh=True
                 )
             else:
                 batch_iter.set_description(
-                    f"Final CE: {final_ce_meter.avg:.2f}, Intermediate CE: {intermediate_ce_meter.avg:.2f}", refresh=True
+                    f"Final CE: {final_ce_meter.avg:.2f}, sparsity: {feature_sparsity.avg:.2f}", refresh=True
                 )
 
         final_ce_meter.reset()
         cl_meter.reset()
         intermediate_ce_meter.reset()
+        feature_sparsity.reset()
 
 
         for i in range(num_clients):
@@ -687,13 +720,19 @@ class hparam:
     classwise_subset: bool = False
     num_groups: int = 5
     experiment_name: str = ""
-    interrupt_range: float = 0.7
+    interrupt_range: float = 0.6
     emb_dim: int = 64
-    alpha: float = 0.1
+    alpha: float = 0.
     vanilla: bool = True
     avg_clients: bool = True
     use_lenet: bool = True
     use_head: bool = True
+    lr: float = 1e-3 / 9
+    client_model_size: int = 1
+    sparse_features: bool = False
+    sparsity_weight: float = 0.
+    local_parallel: bool = False
+    use_attention: bool = False
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -856,8 +895,19 @@ if __name__ == "__main__":
             train_sizes[i] = train_size
 
     if hparams_.non_iid_50_v1:
+        transform = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(.4, .4, .4),
+                transforms.RandomAffine(degrees=(-5, 5), scale=(0.9, 1.08)),
+                RandomGammaCorrection(),
+                transforms.RandomCrop(32, 4),
+                transforms.ToTensor(),
+            ]
+        )
         cifar_train_loader_list, cifar_test_loader_list = get_non_iid_50_v1(
-            batch_size, 8, hparams_.num_clients)
+            batch_size, 8, hparams_.num_clients, transform)
         contrastive_dataset_list = [None] * hparams_.num_clients
         if hparams_.use_contrastive:
             contrastive_dataset_list = cifar_train_loader_list
@@ -924,6 +974,9 @@ if __name__ == "__main__":
         l1_norm_weight=hparams_.l1_norm_weight,
         epochs=epochs,
         num_clients=num_clients,
+        sparse_features=hparams_.sparse_features,
+        sparsity_weight=hparams_.sparsity_weight,
+        local_parallel=hparams_.local_parallel
     )
 
     import json

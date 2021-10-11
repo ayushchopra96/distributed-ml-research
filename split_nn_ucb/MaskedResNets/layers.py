@@ -26,13 +26,14 @@ class MaskedLinear(Module):
     weight: Tensor
 
     def __init__(self, in_features: int, out_features: int, num_masks: int, bias: bool = True,
-                 device=None, dtype=None, use_additive=False) -> None:
+                 device=None, dtype=None, use_additive=False, use_attention=False) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(MaskedLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.num_masks = num_masks
         self.use_additive = use_additive
+        self.use_attention = use_attention
         self.weight = Parameter(torch.empty(
             (out_features, in_features), **factory_kwargs))
         self.weight_masks = Parameter(torch.randn(
@@ -40,6 +41,9 @@ class MaskedLinear(Module):
         if self.use_additive:
             self.weight_additive_masks = Parameter(torch.randn(
                 (self.num_masks, out_features, in_features), **factory_kwargs))
+        if use_attention:
+            self.alpha = Parameter(torch.randn(
+            (self.num_masks, self.num_masks), **factory_kwargs))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_features, **factory_kwargs))
@@ -63,11 +67,19 @@ class MaskedLinear(Module):
         out_weight = (self.weight * self.weight_masks[idx].sigmoid())
         if self.use_additive:
             out_weight = out_weight + self.weight_additive_masks[idx]
-
+            if self.use_attention:
+                client_attention = self.alpha[idx].reshape(-1)
+                out_weight = out_weight + torch.einsum('a,abc->bc', client_attention, self.weight_additive_masks)
         if self.bias is not None:
             out_bias = (self.bias * self.bias_masks[idx].sigmoid())
             if self.use_additive:
                 out_bias = out_bias + self.bias_additive_masks[idx][idx]
+                if self.use_attention:
+                    out_bias = out_bias + torch.einsum(
+                        'a,ab->b', 
+                        client_attention, 
+                        self.bias_additive_masks
+                    )
         else:
             out_bias = None
         return F.linear(input, out_weight, out_bias)
@@ -117,7 +129,8 @@ class _ConvNd(nn.Module):
                  padding_mode: str,
                  device=None,
                  dtype=None, 
-                 use_additive=False
+                 use_additive=False,
+                 use_attention=False,
         ) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(_ConvNd, self).__init__()
@@ -143,6 +156,7 @@ class _ConvNd(nn.Module):
         self.out_channels = out_channels
         self.num_masks = num_masks
         self.use_additive = use_additive
+        self.use_attention = use_attention
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
@@ -185,6 +199,9 @@ class _ConvNd(nn.Module):
             if self.use_additive:
                 self.weight_additive_masks = Parameter(torch.randn(
                     (self.num_masks, out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
+        if self.use_attention:
+            self.alpha = Parameter(torch.randn(
+                (self.num_masks, self.num_masks), **factory_kwargs))
         if bias:
             self.bias = Parameter(torch.empty(
                 out_channels, **factory_kwargs))
@@ -243,7 +260,8 @@ class MaskedConv2d(_ConvNd):
         padding_mode: str = 'zeros',  # TODO: refine this type
         device=None,
         dtype=None,
-        use_additive=False
+        use_additive=False,
+        use_attention=False,
     ) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         kernel_size_ = _pair(kernel_size)
@@ -252,7 +270,7 @@ class MaskedConv2d(_ConvNd):
         dilation_ = _pair(dilation)
         super(MaskedConv2d, self).__init__(
             in_channels, out_channels, num_masks, kernel_size_, stride_, padding_, dilation_,
-            False, _pair(0), groups, bias, padding_mode, use_additive=use_additive, **factory_kwargs)
+            False, _pair(0), groups, bias, padding_mode, use_additive=use_additive, use_attention=use_attention, **factory_kwargs)
 
     def _conv_forward(self, input: Tensor, weight: Tensor, bias: Optional[Tensor]):
         if self.padding_mode != 'zeros':
@@ -266,11 +284,24 @@ class MaskedConv2d(_ConvNd):
         out_weight = (self.weight * self.weight_masks[idx].sigmoid())
         if self.use_additive:
             out_weight = out_weight + self.weight_additive_masks[idx]
+            if self.use_attention:
+                client_attention = self.alpha[idx].reshape(-1)
+                out_weight = out_weight + torch.einsum(
+                    'a,abcde->bcde', 
+                    client_attention, 
+                    self.weight_additive_masks
+                )
 
         if self.bias is not None:
             out_bias = (self.bias * self.bias_masks[idx].sigmoid())
             if self.use_additive:
                 out_bias = out_bias + self.bias_additive_masks[idx]
+                if self.use_attention:
+                    out_bias = out_bias + torch.einsum(
+                        'a,ab->b', 
+                        client_attention, 
+                        self.bias_additive_masks
+                    )
         else:
             out_bias = None
         return self._conv_forward(input, out_weight, out_bias)
@@ -300,7 +331,8 @@ class _NormBase(Module):
         track_running_stats: bool = True,
         device=None,
         dtype=None,
-        use_additive=False
+        use_additive=False,
+        use_attention=False
     ) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(_NormBase, self).__init__()
@@ -310,6 +342,7 @@ class _NormBase(Module):
         self.affine = affine
         self.num_masks = num_masks
         self.use_additive = use_additive
+        self.use_attention = use_attention
         self.track_running_stats = track_running_stats
         if self.affine:
             self.weight = Parameter(torch.empty(
@@ -325,6 +358,8 @@ class _NormBase(Module):
                     self.num_masks, num_features, **factory_kwargs))
                 self.bias_additive_masks = Parameter(torch.randn(
                     self.num_masks, num_features, **factory_kwargs))
+                if use_attention:
+                    self.alpha = Parameter(torch.randn(self.num_masks, self.num_masks, **factory_kwargs))
         else:
             self.register_parameter("weight", None)
             self.register_parameter("bias", None)
@@ -410,11 +445,12 @@ class _BatchNorm(_NormBase):
         track_running_stats=True,
         device=None,
         dtype=None,
-        use_additive=False
+        use_additive=False,
+        use_attention=False
     ):
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(_BatchNorm, self).__init__(
-            num_features, num_masks, eps, momentum, affine, track_running_stats, use_additive=use_additive, **factory_kwargs
+            num_features, num_masks, eps, momentum, affine, track_running_stats, use_additive=use_additive, use_attention=use_attention, **factory_kwargs
         )
 
     def forward(self, idx: int, input: Tensor) -> Tensor:
@@ -452,11 +488,24 @@ class _BatchNorm(_NormBase):
         out_weight = (self.weight * self.weight_masks[idx].sigmoid())
         if self.use_additive:
             out_weight = out_weight + self.weight_additive_masks[idx]
+            if self.use_attention:
+                client_attention = self.alpha[idx].reshape(-1)
+                out_weight = out_weight + torch.einsum(
+                    'a,ab->b', 
+                    client_attention, 
+                    self.weight_additive_masks
+                )
 
         if self.bias is not None:
             out_bias = (self.bias * self.bias_masks[idx].sigmoid())
             if self.use_additive:
                 out_bias = out_bias + self.bias_additive_masks[idx]
+                if self.use_attention:
+                    out_bias = out_bias + torch.einsum(
+                        'a,ab->b', 
+                        client_attention, 
+                        self.bias_additive_masks
+                    )
         else:
             out_bias = None
 
@@ -494,9 +543,9 @@ class MaskedBatchNorm2d(_BatchNorm):
 if __name__ == "__main__":
     context_weights = torch.randn(3, 1)
 
-    pl = MaskedLinear(20, 10, 3)
-    pc = MaskedConv2d(3, 10, 3, 2)
-    pbn = MaskedBatchNorm2d(3, 3)
+    pl = MaskedLinear(20, 10, 3, use_attention=True, use_additive=True)
+    pc = MaskedConv2d(3, 10, 3, 2, use_attention=True, use_additive=True)
+    pbn = MaskedBatchNorm2d(3, 3, use_attention=True, use_additive=True)
 
     inp = torch.randn(32, 20)
     out = pl(1, inp)

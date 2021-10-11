@@ -88,11 +88,12 @@ class ShuffledCycle:
 
 
 class NonIID50Train:
-    def __init__(self, num_clients, client_id, batch_size, version):
+    def __init__(self, num_clients, client_id, batch_size, version, transform=None):
         assert(version in ['v1', 'v2'])
         self.num_clients = num_clients
         self.client_id = client_id
         self.batch_size = batch_size
+        self.transform = transform
 
         args = Arguments(f"./non_iid_50/scripts/tasks/non_iid_50_{version}/non_iid_50/", num_clients)
         self.dl = dl = DataLoader(args)
@@ -115,6 +116,8 @@ class NonIID50Train:
         c = self.client_id
         idx = next(self.index_cycles[c])
         xc = self.data[c]["x"][idx].transpose(2, 0, 1)
+        if not self.transform is None:
+            xc = self.transform(xc)
         yc = one_hot_to_int(self.data[c]["y"][idx])
         return xc, yc
 
@@ -180,10 +183,10 @@ def non_iid_50_collate_fn(batches):
     return xb, yb
 
 
-def get_non_iid_50_v1(batch_size, num_workers, num_clients):
+def get_non_iid_50_v1(batch_size, num_workers, num_clients, transform=None):
     tr_dl = {}
     for i in range(num_clients):
-        tr_ds = NonIID50Train(num_clients, i, batch_size, version="v1")
+        tr_ds = NonIID50Train(num_clients, i, batch_size, version="v1", transform=None)
         tr_dl[i] = tr_ds
 
     ts_dl = {}

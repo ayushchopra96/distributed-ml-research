@@ -57,15 +57,15 @@ class LambdaLayer(nn.Module):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, num_masks, stride=1, option='A'):
+    def __init__(self, in_planes, planes, num_masks, stride=1, option='A', use_additive=True):
         super(BasicBlock, self).__init__()
         self.num_masks = num_masks
         self.conv1 = MaskedConv2d(
-            in_planes, planes, num_masks, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = MaskedBatchNorm2d(planes, num_masks)
+            in_planes, planes, num_masks, kernel_size=3, stride=stride, padding=1, bias=False, use_additive=use_additive)
+        self.bn1 = MaskedBatchNorm2d(planes, num_masks, use_additive=use_additive)
         self.conv2 = MaskedConv2d(
-            planes, planes, num_masks, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = MaskedBatchNorm2d(planes, num_masks)
+            planes, planes, num_masks, kernel_size=3, stride=1, padding=1, bias=False, use_additive=use_additive)
+        self.bn2 = MaskedBatchNorm2d(planes, num_masks, use_additive=use_additive)
         self.option = option
         self.shortcut = None
         if stride != 1 or in_planes != planes:
@@ -78,9 +78,9 @@ class BasicBlock(nn.Module):
             elif option == 'B':
                 self.shortcut = nn.Sequential(
                     MaskedConv2d(in_planes, self.expansion * planes,
-                                      num_masks, kernel_size=1, stride=stride, bias=False),
+                                      num_masks, kernel_size=1, stride=stride, bias=False, use_additive=use_additive),
                     MaskedBatchNorm2d(
-                        self.expansion * planes, num_masks)
+                        self.expansion * planes, num_masks, use_additive=use_additive)
                 )
 
     def forward(self, args):
@@ -97,7 +97,7 @@ class BasicBlock(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_masks, num_clients, num_classes=10, hooked=False, option='A'):
+    def __init__(self, block, num_blocks, num_masks, num_clients, num_classes=10, hooked=False, option='A', use_additive=False):
         super(ResNet, self).__init__()
         self.in_planes = 16
         self.num_masks = num_masks
@@ -105,10 +105,10 @@ class ResNet(nn.Module):
         assert(hooked == False)
 
         self.layer2 = self._make_layer(
-            block, 32, num_blocks[1], num_masks, stride=2, option=option)
+            block, 32, num_blocks[1], num_masks, stride=2, option=option, use_additive=use_additive)
         self.layer3 = self._make_layer(
-            block, 64, num_blocks[2], num_masks, stride=2, option=option)
-        self.linear = MaskedLinear(64, num_classes, num_masks)
+            block, 64, num_blocks[2], num_masks, stride=2, option=option, use_additive=use_additive)
+        self.linear = MaskedLinear(64, num_classes, num_masks, use_additive=use_additive)
 
         self.apply(_weights_init)
 
@@ -119,12 +119,12 @@ class ResNet(nn.Module):
                 loss = loss + p.sigmoid().sum()
         return loss
 
-    def _make_layer(self, block, planes, num_blocks, num_masks, stride, option):
+    def _make_layer(self, block, planes, num_blocks, num_masks, stride, option, use_additive):
         strides = [stride] + [1]*(num_blocks-1)
         layers = []
         for stride in strides:
             layers.append(block(self.in_planes, planes,
-                                num_masks, stride, option=option))
+                                num_masks, stride, option=option, use_additive=use_additive))
             self.in_planes = planes * block.expansion
 
         return nn.Sequential(*layers)
@@ -141,12 +141,12 @@ class ResNet(nn.Module):
         return out
 
 
-def resnet18(num_masks, num_clients, hooked=False, option='A', num_classes=10):
-    return ResNet(BasicBlock, [2, 2, 2], num_masks, num_clients, hooked=hooked, option=option, num_classes=num_classes)
+def resnet18(num_masks, num_clients, hooked=False, option='A', num_classes=10, use_additive=False):
+    return ResNet(BasicBlock, [2, 2, 2, 2], num_masks, num_clients, hooked=hooked, option=option, num_classes=num_classes, use_additive=use_additive)
 
 
-def resnet32(num_masks, num_clients, hooked=False, option='A', num_classes=10):
-    return ResNet(BasicBlock, [5, 5, 5], num_masks, num_clients, hooked=hooked, option=option, num_classes=num_classes)
+def resnet32(num_masks, num_clients, hooked=False, option='A', num_classes=10, use_additive=False):
+    return ResNet(BasicBlock, [5, 5, 5], num_masks, num_clients, hooked=hooked, option=option, num_classes=num_classes, use_additive=use_additive)
 
 
 def resnet44(num_masks, num_clients, hooked=False, option='A', num_classes=10):
