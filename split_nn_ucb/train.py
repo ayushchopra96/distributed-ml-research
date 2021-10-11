@@ -137,8 +137,7 @@ class SplitNN(nn.Module):
 
         self.bob = nn.ModuleList([Server(server_model=server)])
         self.opt_bob = server_opt
-        self.is_partitioned_or_masked = isinstance(
-            server, PartitionedResNet) or isinstance(server, MaskedResNet) or isinstance(server, MaskedLeNet)
+        self.is_partitioned_or_masked = isinstance(server, MaskedResNet) or isinstance(server, MaskedLeNet)
         self.to_server = None
         self.interrupted = interrupted
         self.scheduler_list_alice = scheduler_list_alice
