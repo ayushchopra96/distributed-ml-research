@@ -378,6 +378,8 @@ def experiment_ucb(
     avg_clients,
     model_fn,
     interrupt_range,
+    use_iterations,
+    num_iterations,
     epochs,
     k,
     use_ucb,
@@ -446,11 +448,13 @@ def experiment_ucb(
     
     selected_ids = random.sample(list(range(num_clients)), k)
     for ep in t:  # 200
-        if avg_clients and (ep + 1) % 3 == 0 and ep < epochs - 3:
+        if avg_clients and (ep + 1) % 2 == 0 and ep < epochs - 2:
             comm_interrupted += model_averager.average(interrupted_nn.module)
         batch_iter = trange(num_batches)
         for b in batch_iter:
             for i in range(num_clients):  # 100
+                if steps > num_iterations and use_iterations:
+                    continue
                 total_loss = 0.
 
                 x, y = train_loader_list[i][b]
@@ -728,6 +732,8 @@ class hparam:
     sparsity_weight: float = 0.
     local_parallel: bool = False
     use_attention: bool = False
+    num_iterations: int = int(15740 * 100/32)
+    use_iterations: bool = False
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -747,7 +753,6 @@ if __name__ == "__main__":
     else:
         experiment_name = hparams_.experiment_name + str(hparams_.num_clients)
     print(experiment_name)
-
     niid_classes = None
     
     cifar = hparams_.cifar
@@ -760,6 +765,11 @@ if __name__ == "__main__":
     epochs = hparams_.epochs
     interrupt_range = hparams_.interrupt_range
     emb_dim = hparams_.emb_dim
+
+    if cifar and classwise_subset:
+        hparams_.num_iterations = int(10800 * 100 / 32)
+    elif hparams_.non_iid_50_v1:
+        hparams_.num_iterations = int(15740 * 100/32)
 
     cifar_or_tiny = hparams_.cifar or hparams_.tiny
     if cifar:
@@ -925,7 +935,10 @@ if __name__ == "__main__":
 
 
     if interrupted:
-        interrupt_range = [0, int(interrupt_range*epochs)]
+        if not hparams_.use_iterations:
+            interrupt_range = [0, int(interrupt_range*epochs)]
+        else:
+            interrupt_range = [0, int(interrupt_range*hparams_.num_iterations)]
     else:
         interrupt_range = [-2, 0]  # Hack for not using Local Parallelism
         emb_dim = None
@@ -966,6 +979,8 @@ if __name__ == "__main__":
         discount_hparam=hparams_.discount,
         dataset_sizes=train_sizes,
         interrupt_range=interrupt_range,
+        use_iterations=hparams_.use_iterations,
+        num_iterations=hparams_.num_iterations,
         l1_norm_weight=hparams_.l1_norm_weight,
         epochs=epochs,
         num_clients=num_clients,

@@ -23,8 +23,8 @@ def make_command_client_size(args):
 
 client_sizes = [1, 2, 3, 4] * 5
 
-with mp.Pool(NUM_GPUS * JOBS_PER_GPU) as p:
-    p.map(make_command_client_size, enumerate(client_sizes))
+# with mp.Pool(NUM_GPUS * JOBS_PER_GPU) as p:
+#     p.map(make_command_client_size, enumerate(client_sizes))
 
 # Interrupt Range Ablation
 def make_command_interrupt_range(args):
@@ -85,17 +85,17 @@ def make_command_niid_50(random_or_not, vanilla_or_not, num_clients, k, avg=Fals
 
 niid_commands = [
     # Random
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=0, local_parallel=True),
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=1, local_parallel=True),
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=2, local_parallel=True),
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=3, local_parallel=True),
-    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=3, run=4, local_parallel=True),
-    # # Bandit
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=0, local_parallel=True),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=1, local_parallel=True),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=2, local_parallel=True),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=3, local_parallel=True),
-    # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=4, local_parallel=True),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=2, run=0, local_parallel=True),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=2, run=1, local_parallel=True),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=2, run=2, local_parallel=True),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=2, run=3, local_parallel=True),
+    make_command_niid_50(random_or_not=True, vanilla_or_not=False, num_clients=5, k=2, run=4, local_parallel=True),
+    # Bandit
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=2, run=0, local_parallel=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=2, run=1, local_parallel=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=2, run=2, local_parallel=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=2, run=3, local_parallel=True),
+    make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=2, run=4, local_parallel=True),
     # # Vanilla
     # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=0),
     # make_command_niid_50(random_or_not=False, vanilla_or_not=True, num_clients=5, k=5, run=1),
@@ -128,8 +128,8 @@ niid_commands = [
     # make_command_niid_50(random_or_not=False, vanilla_or_not=False, num_clients=5, k=3, run=4, local_parallel=True),    
 ]
 
-# with mp.Pool(2 * NUM_GPUS) as p:
-#     p.map(run_command, enumerate(niid_commands))
+with mp.Pool(2 * NUM_GPUS) as p:
+    p.map(run_command, enumerate(niid_commands))
 
 # # Cifar10 expts
 def make_command_cifar(random_or_not, vanilla_or_not, num_clients, k, avg=False, masked=False, run=0, use_head=True, version="v1", local_parallel=False, interrupt=0.6):
