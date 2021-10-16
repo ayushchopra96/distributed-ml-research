@@ -39,7 +39,6 @@ from utils import *
 # torch.backends.cudnn.deterministic = True
 # torch.backends.cudnn.benchmark = False
 #torch.backends.cudnn.enabled = False
-torch.manual_seed(123)
 # torch.autograd.set_detect_anomaly(True)
 
 # from tqdm.notebook import
@@ -734,6 +733,7 @@ class hparam:
     use_attention: bool = False
     num_iterations: int = int(15740 * 100/32)
     use_iterations: bool = False
+    seed: int = 123
 
 if __name__ == "__main__":
     parser = ArgumentParser()
@@ -765,6 +765,8 @@ if __name__ == "__main__":
     epochs = hparams_.epochs
     interrupt_range = hparams_.interrupt_range
     emb_dim = hparams_.emb_dim
+
+    torch.manual_seed(hparams_.seed)
 
     if cifar and classwise_subset:
         hparams_.num_iterations = int(10800 * 100 / 32)
@@ -878,7 +880,6 @@ if __name__ == "__main__":
         contrastive_dataset_list = []
         train_sizes = torch.zeros((num_clients,))
         for i in range(num_clients):
-            torch.manual_seed(i)
             train_size = int(len(trainset) / num_clients)
             buffer = len(trainset) - train_size
             ts, test_split = torch.utils.data.random_split(
