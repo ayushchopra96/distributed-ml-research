@@ -21,11 +21,10 @@ class DataLoader:
 
     Loading data for the corresponding clients
 
-    Created by:
+    Original Code by:
         Wonyong Jeong (wyjeong@kaist.ac.kr)
 
-    Modified by: 
-        Surya Kant Sahu (surya.oju@pm.me)
+    Follow instructions at https://github.com/wyjeong/FedWeIT to generate Non-iid-50 tasks, then point the directory of the dataset.
     """
 
     def __init__(self, args):
